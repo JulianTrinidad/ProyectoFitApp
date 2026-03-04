@@ -1,8 +1,19 @@
 import { Button } from '@/components/ui/button';
-import { Plus, Edit, Trash2 } from 'lucide-react';
-import { mockProducts } from '@/data/mockData';
+import { Plus, Edit, Trash2, ShoppingBag } from 'lucide-react';
+
+interface Product {
+    id: string;
+    name: string;
+    description: string;
+    image: string;
+    category: string;
+    price: number;
+    stock: number;
+}
 
 export function ShopSection() {
+    const products: Product[] = [];
+
     return (
         <div className="space-y-6 animate-fade-in">
             <div className="flex items-center justify-between">
@@ -29,7 +40,7 @@ export function ShopSection() {
                             </tr>
                         </thead>
                         <tbody>
-                            {mockProducts.map((product) => (
+                            {products.map((product) => (
                                 <tr key={product.id} className="border-t border-border hover:bg-muted/30 transition-colors">
                                     <td className="p-4">
                                         <div className="flex items-center gap-3">
@@ -63,6 +74,13 @@ export function ShopSection() {
                             ))}
                         </tbody>
                     </table>
+
+                    {products.length === 0 && (
+                        <div className="p-12 text-center border-t border-border bg-card/50">
+                            <ShoppingBag className="w-12 h-12 text-muted-foreground mx-auto mb-4 opacity-20" />
+                            <p className="text-muted-foreground">No hay productos en el inventario.</p>
+                        </div>
+                    )}
                 </div>
             </div>
         </div>

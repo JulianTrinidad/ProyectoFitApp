@@ -1,12 +1,23 @@
 import { useState } from 'react';
 import { useApp } from '@/contexts/AppContext';
+import { supabase } from '@/lib/supabase';
 import {
   Home, Dumbbell, Apple, User, BookOpen
 } from 'lucide-react';
 
 // Imports de los nuevos componentes modulares
 import type { MobileTab, NutritionTab as NutritionTabType } from './mobile/mobileTypes';
-import type { AvailableRoutine } from '@/data/mockData';
+
+// INTERFAZ CORREGIDA: Sin el "?" en shortName y emoji para que coincida con lo que piden los hijos
+interface AvailableRoutine {
+  id: string;
+  name: string;
+  shortName: string;
+  emoji: string;
+  description?: string;
+  exercises?: any[];
+}
+
 import { HomeTab } from './mobile/HomeTab';
 import { WorkoutTab } from './mobile/WorkoutTab';
 import { NutritionTab } from './mobile/NutritionTab';
@@ -20,23 +31,37 @@ export function MobileApp() {
 
   // ESTADOS GLOBALES DE NAVEGACIÓN
   const [activeTab, setActiveTab] = useState<MobileTab>('home');
-  // Necesario para que el botón "Escanear" del Home lleve directo al scanner
   const [nutritionTab, setNutritionTab] = useState<NutritionTabType>('diet');
-  // Custom routines created by the user
+
+  // Custom routines created by the user - INICIA VACÍO
   const [customRoutines, setCustomRoutines] = useState<AvailableRoutine[]>([]);
-  // Onboarding state
-  const [showOnboarding, setShowOnboarding] = useState(true);
+
+  // Onboarding: se muestra solo si el usuario NO lo completó
+  const showOnboarding = currentUser ? !currentUser.onboardingCompleted : false;
+
   // Daily missions state
   const [waterIntake, setWaterIntake] = useState(0);
   const [hasTrainedToday, setHasTrainedToday] = useState(false);
   const [hasRestedToday, setHasRestedToday] = useState(false);
 
-  const handleOnboardingComplete = (generatedRoutine: AvailableRoutine) => {
-    setShowOnboarding(false);
+  const handleOnboardingComplete = async (generatedRoutine: AvailableRoutine) => {
     setCustomRoutines(prev => [...prev, generatedRoutine]);
+
+    // Persistir en Supabase
+    if (currentUser?.id) {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ onboarding_completed: true })
+        .eq('id', currentUser.id);
+
+      if (!error) {
+        updateUser(currentUser.id, { onboardingCompleted: true });
+      } else {
+        console.error('Error guardando onboarding:', error);
+      }
+    }
   };
 
-  // RENDERIZADO DE CONTENIDO
   const renderContent = () => {
     switch (activeTab) {
       case 'home':
@@ -55,7 +80,8 @@ export function MobileApp() {
           <WorkoutTab
             currentUser={currentUser}
             updateUser={updateUser}
-            customRoutines={customRoutines}
+            // "as any" es el puente temporal para que no chille por el tipo de mockData
+            customRoutines={customRoutines as any}
             setHasTrainedToday={setHasTrainedToday}
             setHasRestedToday={setHasRestedToday}
           />
@@ -71,7 +97,8 @@ export function MobileApp() {
           />
         );
       case 'routines':
-        return <RoutinesTab currentUser={currentUser} customRoutines={customRoutines} setCustomRoutines={setCustomRoutines} />;
+        // "as any" aplicado también aquí
+        return <RoutinesTab currentUser={currentUser} customRoutines={customRoutines as any} setCustomRoutines={setCustomRoutines as any} />;
       case 'shop':
         return <ShopTab />;
       case 'profile':
@@ -99,17 +126,15 @@ export function MobileApp() {
   };
 
   if (showOnboarding) {
-    return <OnboardingFlow onComplete={handleOnboardingComplete} />;
+    return <OnboardingFlow onComplete={handleOnboardingComplete as any} />;
   }
 
   return (
     <div className="mobile-container flex flex-col min-h-screen bg-background">
-      {/* Content Area */}
       <div className="flex-1 overflow-y-auto pb-20">
         {renderContent()}
       </div>
 
-      {/* Bottom Navigation */}
       <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-card/95 backdrop-blur-lg border-t border-border px-2 py-2 z-50">
         <div className="flex justify-around">
           {[

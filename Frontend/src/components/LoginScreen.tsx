@@ -3,7 +3,9 @@ import { useApp } from '@/contexts/AppContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Dumbbell, Eye, EyeOff, Flame } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dumbbell, Eye, EyeOff, Flame, Loader2 } from 'lucide-react';
+import { supabase } from '@/lib/supabase';
 
 export function LoginScreen() {
   const { login, setViewMode, setCurrentUser } = useApp();
@@ -12,6 +14,16 @@ export function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  // Estados del modal de registro
+  const [showRegister, setShowRegister] = useState(false);
+  const [regName, setRegName] = useState('');
+  const [regLastName, setRegLastName] = useState('');
+  const [regEmail, setRegEmail] = useState('');
+  const [regPassword, setRegPassword] = useState('');
+  const [regConfirmPassword, setRegConfirmPassword] = useState('');
+  const [regIsLoading, setRegIsLoading] = useState(false);
+  const [regError, setRegError] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -28,13 +40,77 @@ export function LoginScreen() {
     setIsLoading(false);
   };
 
-  const handleQuickLogin = (type: 'trainer' | 'client') => {
-    if (type === 'trainer') {
-      setEmail('carlos@fitpro.com');
-    } else {
-      setEmail('maria@gmail.com');
+  const clearRegisterForm = () => {
+    setRegName('');
+    setRegLastName('');
+    setRegEmail('');
+    setRegPassword('');
+    setRegConfirmPassword('');
+    setRegError('');
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRegError('');
+
+    // Validaciones
+    if (regPassword.length < 6) {
+      setRegError('La contraseña debe tener al menos 6 caracteres.');
+      return;
     }
-    setPassword('demo123');
+
+    if (regPassword !== regConfirmPassword) {
+      setRegError('Las contraseñas no coinciden.');
+      return;
+    }
+
+    setRegIsLoading(true);
+
+    try {
+      const { data, error: signUpError } = await supabase.auth.signUp({
+        email: regEmail,
+        password: regPassword,
+      });
+
+      if (signUpError) {
+        setRegError('Error al crear la cuenta: ' + signUpError.message);
+        setRegIsLoading(false);
+        return;
+      }
+
+      const user = data.user;
+
+      if (!user) {
+        setRegError('No se pudo obtener la información del usuario.');
+        setRegIsLoading(false);
+        return;
+      }
+
+      const { error: profileError } = await supabase.from('profiles').insert([
+        {
+          id: user.id,
+          email: regEmail,
+          name: regName + ' ' + regLastName,
+          role: 'client',
+          avatar: '',
+          membership_status: 'active',
+        },
+      ]);
+
+      if (profileError) {
+        setRegError('Error al crear el perfil: ' + profileError.message);
+        setRegIsLoading(false);
+        return;
+      }
+
+      // Éxito: cerrar modal y limpiar formulario
+      setShowRegister(false);
+      clearRegisterForm();
+    } catch (err) {
+      setRegError('Ocurrió un error inesperado. Intenta de nuevo.');
+    } finally {
+      setRegIsLoading(false);
+    }
   };
 
   return (
@@ -106,37 +182,117 @@ export function LoginScreen() {
               )}
             </Button>
           </form>
-
-          {/* Quick Login Buttons */}
-          <div className="mt-6 pt-6 border-t border-border">
-            <p className="text-center text-sm text-muted-foreground mb-4">Acceso rápido demo</p>
-            <div className="grid grid-cols-2 gap-3">
-              <Button
-                variant="secondary"
-                onClick={() => handleQuickLogin('client')}
-                className="h-12"
-              >
-                👤 Usuario
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => handleQuickLogin('trainer')}
-                className="h-12"
-              >
-                🏋️ Entrenador
-              </Button>
-            </div>
-          </div>
         </div>
 
         {/* Footer */}
         <p className="text-center text-muted-foreground text-sm mt-6">
           ¿No tienes cuenta?{' '}
-          <button className="text-primary font-medium hover:underline">
+          <button
+            onClick={() => setShowRegister(true)}
+            className="text-primary font-medium hover:underline"
+          >
             Regístrate aquí
           </button>
         </p>
       </div>
+
+      {/* Modal de Registro */}
+      <Dialog open={showRegister} onOpenChange={(open) => {
+        setShowRegister(open);
+        if (!open) clearRegisterForm();
+      }}>
+        <DialogContent className="sm:max-w-md rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-xl">Crear Cuenta</DialogTitle>
+          </DialogHeader>
+
+          <form onSubmit={handleRegister} className="space-y-4 mt-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="regName">Nombre</Label>
+                <Input
+                  id="regName"
+                  type="text"
+                  placeholder="Juan"
+                  value={regName}
+                  onChange={(e) => setRegName(e.target.value)}
+                  required
+                  className="h-11 rounded-xl"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="regLastName">Apellido</Label>
+                <Input
+                  id="regLastName"
+                  type="text"
+                  placeholder="Pérez"
+                  value={regLastName}
+                  onChange={(e) => setRegLastName(e.target.value)}
+                  required
+                  className="h-11 rounded-xl"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="regEmail">Correo Electrónico</Label>
+              <Input
+                id="regEmail"
+                type="email"
+                placeholder="tu@email.com"
+                value={regEmail}
+                onChange={(e) => setRegEmail(e.target.value)}
+                required
+                className="h-11 rounded-xl"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="regPassword">Contraseña</Label>
+              <Input
+                id="regPassword"
+                type="password"
+                placeholder="Mínimo 6 caracteres"
+                value={regPassword}
+                onChange={(e) => setRegPassword(e.target.value)}
+                required
+                className="h-11 rounded-xl"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="regConfirmPassword">Confirmar Contraseña</Label>
+              <Input
+                id="regConfirmPassword"
+                type="password"
+                placeholder="Repite tu contraseña"
+                value={regConfirmPassword}
+                onChange={(e) => setRegConfirmPassword(e.target.value)}
+                required
+                className="h-11 rounded-xl"
+              />
+            </div>
+
+            {regError && (
+              <p className="text-destructive text-sm animate-fade-in">{regError}</p>
+            )}
+
+            <Button
+              type="submit"
+              variant="gradient"
+              size="xl"
+              className="w-full"
+              disabled={regIsLoading}
+            >
+              {regIsLoading ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                'Crear Cuenta'
+              )}
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,8 +1,20 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Search, Upload, Eye, Check } from 'lucide-react';
-import { mockExercises, Exercise } from '@/data/mockData';
+import { Search, Upload, Eye, Check, Dumbbell } from 'lucide-react';
+
+// INTERFAZ LOCAL: Mantiene la coherencia de los datos reales de Supabase que vendrán después
+interface Exercise {
+    id: string;
+    name: string;
+    muscleGroup: string;
+    equipment: string;
+    image: string;
+    instructions: string;
+    description?: string;
+    tips?: string[];
+}
+
 import {
     Dialog,
     DialogContent,
@@ -12,6 +24,9 @@ export function ExercisesSection() {
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedMuscleFilter, setSelectedMuscleFilter] = useState<'all' | 'upper' | 'lower'>('all');
     const [selectedExercise, setSelectedExercise] = useState<Exercise | null>(null);
+
+    // LIMPIEZA: Reemplazamos mockExercises por un array vacío para conectar Supabase después
+    const exercises: Exercise[] = [];
 
     return (
         <div className="space-y-6 animate-fade-in">
@@ -59,7 +74,7 @@ export function ExercisesSection() {
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {mockExercises
+                {exercises
                     .filter(e => {
                         const matchesSearch = e.name.toLowerCase().includes(searchQuery.toLowerCase());
                         const upperMuscles = ['Pecho', 'Espalda', 'Hombros', 'Brazos', 'Core'];
@@ -97,6 +112,13 @@ export function ExercisesSection() {
                             </div>
                         </div>
                     ))}
+
+                {exercises.length === 0 && (
+                    <div className="col-span-full p-12 text-center border-2 border-dashed border-border rounded-2xl bg-card">
+                        <Dumbbell className="w-12 h-12 text-muted-foreground mx-auto mb-4 opacity-20" />
+                        <p className="text-muted-foreground">Tu biblioteca de ejercicios está vacía.</p>
+                    </div>
+                )}
             </div>
 
             {/* Exercise Detail Modal */}

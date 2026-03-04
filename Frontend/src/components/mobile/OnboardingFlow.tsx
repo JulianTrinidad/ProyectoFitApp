@@ -1,12 +1,23 @@
 import { useState, useEffect } from 'react';
 import { Progress } from '@/components/ui/progress';
-import type { AvailableRoutine } from '@/data/mockData';
 import {
     Target, Flame, Dumbbell, Zap,
     Calendar, CalendarDays, CalendarRange,
     GraduationCap, TrendingUp, Award,
     ArrowRight, Loader2, Sparkles
 } from 'lucide-react';
+
+/**
+ * Estructura de datos para las rutinas generadas.
+ * Se define localmente para evitar dependencias de archivos de datos externos.
+ */
+interface AvailableRoutine {
+    id: string;
+    name: string;
+    shortName: string;
+    emoji: string;
+    exercises: any[];
+}
 
 interface OnboardingFlowProps {
     onComplete: (routine: AvailableRoutine) => void;
@@ -16,6 +27,9 @@ type Objective = 'Perder Grasa' | 'Ganar Masa Muscular' | 'Estar en Forma';
 type Days = '2-3 días' | '4-5 días' | '6 días';
 type Level = 'Principiante' | 'Intermedio' | 'Avanzado';
 
+/**
+ * Configuración de opciones visuales y descriptivas para el flujo de selección.
+ */
 const objectiveOptions: { label: Objective; icon: typeof Flame; description: string }[] = [
     { label: 'Perder Grasa', icon: Flame, description: 'Quema calorías y define tu cuerpo' },
     { label: 'Ganar Masa Muscular', icon: Dumbbell, description: 'Construye músculo y fuerza' },
@@ -34,6 +48,9 @@ const levelOptions: { label: Level; icon: typeof GraduationCap; description: str
     { label: 'Avanzado', icon: Award, description: 'Más de 2 años entrenando' },
 ];
 
+/**
+ * Mensajes dinámicos que se muestran durante la fase de procesamiento simulado.
+ */
 const loadingMessages = [
     'Analizando tu perfil...',
     'Seleccionando los mejores ejercicios...',
@@ -42,6 +59,10 @@ const loadingMessages = [
     '¡Casi listo! 🎉',
 ];
 
+/**
+ * Lógica interna de generación de planes. 
+ * Crea una estructura de rutina basada en los parámetros seleccionados por el usuario.
+ */
 function generateRoutine(objective: Objective, days: Days, level: Level): AvailableRoutine {
     const emojiMap: Record<Objective, string> = {
         'Perder Grasa': '🔥',
@@ -49,24 +70,21 @@ function generateRoutine(objective: Objective, days: Days, level: Level): Availa
         'Estar en Forma': '⚡',
     };
 
-    const exercisePools: Record<Objective, { id: string; name: string; image: string; tips: string[]; sets: number; reps: string; rest: number }[]> = {
+    const exercisePools: Record<Objective, any[]> = {
         'Perder Grasa': [
-            { id: 'og-1', name: 'Sentadilla con Barra', image: 'https://images.unsplash.com/photo-1574680096145-d05b474e2155?w=400&h=300&fit=crop', tips: ['Pecho arriba', 'Rodillas hacia afuera', 'Rompe la paralela'], sets: 4, reps: '12-15', rest: 60 },
-            { id: 'og-2', name: 'Press Banca Plano', image: 'https://images.unsplash.com/photo-1571388208497-71bedc66e932?w=400&h=300&fit=crop', tips: ['Retrae escápulas', 'Pies firmes', 'Controla la bajada'], sets: 3, reps: '12-15', rest: 60 },
-            { id: 'og-3', name: 'Remo con Barra', image: 'https://images.unsplash.com/photo-1603287681836-b174ce5074c2?w=400&h=300&fit=crop', tips: ['Torso a 45°', 'Tira hacia el ombligo', 'Aprieta escápulas'], sets: 3, reps: '12-15', rest: 60 },
-            { id: 'og-4', name: 'Burpees', image: 'https://images.unsplash.com/photo-1517836357463-d25dfeac3438?w=400&h=300&fit=crop', tips: ['Prioriza técnica', 'Mantén el core activado', 'Respiración controlada'], sets: 3, reps: '10', rest: 45 },
+            { id: 'og-1', name: 'Sentadilla con Barra', image: 'https://images.unsplash.com/photo-1574680096145-d05b474e2155?w=400&h=300&fit=crop', tips: ['Pecho arriba', 'Rodillas hacia afuera'], sets: 4, reps: '12-15', rest: 60 },
+            { id: 'og-2', name: 'Press Banca Plano', image: 'https://images.unsplash.com/photo-1571388208497-71bedc66e932?w=400&h=300&fit=crop', tips: ['Retrae escápulas'], sets: 3, reps: '12-15', rest: 60 },
+            { id: 'og-4', name: 'Burpees', image: 'https://images.unsplash.com/photo-1517836357463-d25dfeac3438?w=400&h=300&fit=crop', tips: ['Prioriza técnica'], sets: 3, reps: '10', rest: 45 },
         ],
         'Ganar Masa Muscular': [
-            { id: 'og-5', name: 'Press Banca Plano con Barra', image: 'https://images.unsplash.com/photo-1571388208497-71bedc66e932?w=400&h=300&fit=crop', tips: ['Retrae escápulas', 'Baja hasta el esternón', 'Empuje explosivo'], sets: 4, reps: '6-8', rest: 120 },
-            { id: 'og-6', name: 'Sentadilla con Barra', image: 'https://images.unsplash.com/photo-1574680096145-d05b474e2155?w=400&h=300&fit=crop', tips: ['Profundidad completa', 'Core apretado', 'Rodillas afuera'], sets: 4, reps: '6-8', rest: 150 },
-            { id: 'og-7', name: 'Peso Muerto', image: 'https://images.unsplash.com/photo-1598268030450-7a476f602982?w=400&h=300&fit=crop', tips: ['Espalda neutra', 'Barra pegada a las piernas', 'Empuja el suelo'], sets: 4, reps: '5-6', rest: 180 },
-            { id: 'og-8', name: 'Press Militar', image: 'https://images.unsplash.com/photo-1532029837206-abbe2b7620e3?w=400&h=300&fit=crop', tips: ['Core apretado', 'No arquees la espalda', 'Bloquea arriba'], sets: 3, reps: '8-10', rest: 90 },
+            { id: 'og-5', name: 'Press Banca con Barra', image: 'https://images.unsplash.com/photo-1571388208497-71bedc66e932?w=400&h=300&fit=crop', tips: ['Empuje explosivo'], sets: 4, reps: '6-8', rest: 120 },
+            { id: 'og-6', name: 'Sentadilla con Barra', image: 'https://images.unsplash.com/photo-1574680096145-d05b474e2155?w=400&h=300&fit=crop', tips: ['Core apretado'], sets: 4, reps: '6-8', rest: 150 },
+            { id: 'og-7', name: 'Peso Muerto', image: 'https://images.unsplash.com/photo-1598268030450-7a476f602982?w=400&h=300&fit=crop', tips: ['Espalda neutra'], sets: 4, reps: '5-6', rest: 180 },
         ],
         'Estar en Forma': [
-            { id: 'og-9', name: 'Dominadas', image: 'https://images.unsplash.com/photo-1598971639058-fab3c3109a00?w=400&h=300&fit=crop', tips: ['Agarre prono', 'Tirón desde dorsales', 'Controla el descenso'], sets: 3, reps: '8-12', rest: 90 },
-            { id: 'og-10', name: 'Sentadilla con Barra', image: 'https://images.unsplash.com/photo-1574680096145-d05b474e2155?w=400&h=300&fit=crop', tips: ['Pecho arriba', 'Paralela completa', 'Controla la excéntrica'], sets: 3, reps: '10-12', rest: 90 },
-            { id: 'og-11', name: 'Press Banca con Mancuernas', image: 'https://images.unsplash.com/photo-1571019614242-c5c5dee9f50b?q=80&w=400&auto=format&fit=crop', tips: ['No choques las mancuernas', 'Baja controlado', 'Pecho abierto'], sets: 3, reps: '10-12', rest: 75 },
-            { id: 'og-12', name: 'Plancha', image: 'https://images.unsplash.com/photo-1566241142559-40e1dab266c6?w=400&h=300&fit=crop', tips: ['No dejes caer la cadera', 'Core activado', 'Respiración controlada'], sets: 3, reps: '45 seg', rest: 60 },
+            { id: 'og-9', name: 'Dominadas', image: 'https://images.unsplash.com/photo-1598971639058-fab3c3109a00?w=400&h=300&fit=crop', tips: ['Controla el descenso'], sets: 3, reps: '8-12', rest: 90 },
+            { id: 'og-11', name: 'Press Mancuernas', image: 'https://images.unsplash.com/photo-1571019614242-c5c5dee9f50b?q=80&w=400&auto=format&fit=crop', tips: ['Pecho abierto'], sets: 3, reps: '10-12', rest: 75 },
+            { id: 'og-12', name: 'Plancha', image: 'https://images.unsplash.com/photo-1566241142559-40e1dab266c6?w=400&h=300&fit=crop', tips: ['Respiración controlada'], sets: 3, reps: '45 seg', rest: 60 },
         ],
     };
 
@@ -87,7 +105,10 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
     const [isGenerating, setIsGenerating] = useState(false);
 
-    // Loading messages cycle
+    /**
+     * Efecto que controla la fase final del flujo.
+     * Gestiona la transición de los mensajes de carga y dispara la finalización del proceso.
+     */
     useEffect(() => {
         if (step !== 4) return;
         setIsGenerating(true);
@@ -115,6 +136,9 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
     const progressValue = step * 25;
 
+    /**
+     * Valida si el usuario ha seleccionado una opción en el paso actual para habilitar la navegación.
+     */
     const canProceed =
         (step === 1 && objective !== null) ||
         (step === 2 && days !== null) ||
@@ -140,7 +164,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
     return (
         <div className="fixed inset-0 z-50 bg-background flex flex-col">
-            {/* Top Section: Progress */}
+            {/* Cabecera de progreso visual */}
             <div className="px-6 pt-6 pb-4">
                 <div className="flex items-center justify-between mb-2">
                     <span className="text-xs text-muted-foreground font-medium">Paso {step} de 4</span>
@@ -149,11 +173,10 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                 <Progress value={progressValue} className="h-2" />
             </div>
 
-            {/* Content Area */}
+            {/* Contenedor dinámico de pasos */}
             <div className="flex-1 overflow-y-auto px-6 pb-32">
                 {step < 4 ? (
                     <div className="animate-fade-in" key={step}>
-                        {/* Header */}
                         <div className="mb-8 mt-4">
                             <h1 className="text-2xl font-bold text-foreground leading-tight">
                                 {stepTitles[step - 1]}
@@ -163,7 +186,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                             </p>
                         </div>
 
-                        {/* Options Cards */}
+                        {/* Mapeo de opciones basado en el estado actual del flujo */}
                         <div className="space-y-4">
                             {step === 1 && objectiveOptions.map(opt => (
                                 <button
@@ -221,7 +244,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                         </div>
                     </div>
                 ) : (
-                    /* Step 4: Loading / Generating */
+                    /* Vista de procesamiento con retroalimentación visual */
                     <div className="flex flex-col items-center justify-center min-h-[60vh] animate-fade-in">
                         <div className="relative mb-8">
                             <div className="w-24 h-24 rounded-full bg-primary/10 flex items-center justify-center">
@@ -234,10 +257,9 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
                         <h2 className="text-xl font-bold text-foreground mb-2">Creando tu plan</h2>
                         <p className="text-muted-foreground text-sm text-center mb-8 max-w-[250px]">
-                            Nuestra IA está armando un plan personalizado para vos
+                            Nuestro sistema está configurando los ejercicios para vos
                         </p>
 
-                        {/* Loading Messages */}
                         <div className="space-y-3 w-full max-w-xs">
                             {loadingMessages.map((msg, i) => (
                                 <div
@@ -263,7 +285,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                 )}
             </div>
 
-            {/* Bottom Button */}
+            {/* Acciones del flujo de navegación */}
             {step < 4 && (
                 <div className="fixed bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-background via-background to-transparent">
                     <div className="max-w-md mx-auto">
@@ -271,8 +293,8 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                             onClick={handleNext}
                             disabled={!canProceed}
                             className={`w-full py-4 rounded-2xl font-semibold text-lg flex items-center justify-center gap-2 transition-all duration-300 ${canProceed
-                                    ? 'btn-gradient cursor-pointer'
-                                    : 'bg-muted text-muted-foreground cursor-not-allowed'
+                                ? 'btn-gradient cursor-pointer'
+                                : 'bg-muted text-muted-foreground cursor-not-allowed'
                                 }`}
                         >
                             {step === 3 ? 'Generar mi plan' : 'Siguiente'}

@@ -5,7 +5,7 @@ import {
     Dumbbell, Users, Search, Plus, Edit, Trash2,
     GripVertical, ChevronDown, ChevronUp
 } from 'lucide-react';
-import { mockExercises, mockRoutines, mockUsers, Routine } from '@/data/mockData';
+import { useApp } from '@/contexts/AppContext';
 import { useToast } from '@/hooks/use-toast';
 import {
     Dialog,
@@ -22,11 +22,42 @@ interface ModalExercise {
     reps: string;
 }
 
+interface Exercise {
+    id: string;
+    name: string;
+    muscleGroup: string;
+    image: string;
+}
+
+interface Routine {
+    id: string;
+    name: string;
+    exercises: Array<{
+        exerciseId: string;
+        sets: number;
+        reps: string;
+    }>;
+    assignedTo: string[];
+}
+
+interface User {
+    id: string;
+    name: string;
+    email: string;
+    avatar: string;
+    role: string;
+}
+
 export function RoutinesSection() {
     const { toast } = useToast();
+    const { users } = useApp(); // Solo traemos users que ya existe
     const [expandedRoutine, setExpandedRoutine] = useState<string | null>(null);
 
-    // Modal states
+    // DEFINICIÓN LOCAL: Esto soluciona los errores de "Property does not exist"
+    const exercises: Exercise[] = [];
+    const routines: Routine[] = [];
+
+    // Estados de modales
     const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
     const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
     const [selectedRoutine, setSelectedRoutine] = useState<Routine | null>(null);
@@ -34,7 +65,7 @@ export function RoutinesSection() {
     const [modalExercises, setModalExercises] = useState<ModalExercise[]>([]);
     const [selectedExerciseId, setSelectedExerciseId] = useState('');
 
-    const clients = mockUsers.filter(u => u.role === 'client');
+    const clients = (users || []).filter(u => u.role === 'client') as User[];
 
     const handleOpenCreate = () => {
         setSelectedRoutine(null);
@@ -49,10 +80,10 @@ export function RoutinesSection() {
         setRoutineName(routine.name);
         setModalExercises(
             routine.exercises.map(re => {
-                const ex = mockExercises.find(e => e.id === re.exerciseId);
+                const ex = exercises.find(e => e.id === re.exerciseId);
                 return {
                     id: re.exerciseId,
-                    name: ex?.name ?? 'Ejercicio desconocido',
+                    name: ex?.name ?? 'Ejercicio',
                     sets: re.sets,
                     reps: re.reps,
                 };
@@ -69,7 +100,7 @@ export function RoutinesSection() {
 
     const handleAddExercise = () => {
         if (!selectedExerciseId) return;
-        const exercise = mockExercises.find(e => e.id === selectedExerciseId);
+        const exercise = exercises.find(e => e.id === selectedExerciseId);
         if (!exercise) return;
 
         setModalExercises(prev => [...prev, {
@@ -94,12 +125,9 @@ export function RoutinesSection() {
     };
 
     const handleSave = () => {
-        console.log('Rutina guardada:', { name: routineName, exercises: modalExercises });
         toast({
             title: selectedRoutine ? "Rutina actualizada ✅" : "Rutina creada ✅",
-            description: selectedRoutine
-                ? `"${routineName}" se ha guardado correctamente`
-                : `"${routineName}" se ha creado correctamente`,
+            description: `"${routineName}" se ha guardado correctamente`,
         });
         setIsCreateModalOpen(false);
         setSelectedRoutine(null);
@@ -130,16 +158,15 @@ export function RoutinesSection() {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Exercises Library */}
                 <div className="lg:col-span-1 bg-card rounded-2xl border border-border p-4">
-                    <h3 className="font-semibold text-foreground mb-4">Biblioteca de Ejercicios</h3>
+                    <h3 className="font-semibold text-foreground mb-4">Biblioteca</h3>
                     <div className="relative mb-4">
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                        <Input placeholder="Buscar ejercicio..." className="pl-10" />
+                        <Input placeholder="Buscar..." className="pl-10" />
                     </div>
                     <div className="space-y-2 max-h-96 overflow-y-auto">
-                        {mockExercises.slice(0, 6).map((exercise) => (
-                            <div key={exercise.id} className="flex items-center gap-3 p-3 bg-muted/50 rounded-xl cursor-grab hover:bg-muted transition-colors">
+                        {exercises.slice(0, 6).map((exercise) => (
+                            <div key={exercise.id} className="flex items-center gap-3 p-3 bg-muted/50 rounded-xl hover:bg-muted transition-colors">
                                 <GripVertical className="w-4 h-4 text-muted-foreground" />
                                 <img src={exercise.image} alt={exercise.name} className="w-10 h-10 rounded-lg object-cover" />
                                 <div className="flex-1 min-w-0">
@@ -151,9 +178,8 @@ export function RoutinesSection() {
                     </div>
                 </div>
 
-                {/* Routines List */}
                 <div className="lg:col-span-2 space-y-4">
-                    {mockRoutines.map((routine) => (
+                    {routines.map((routine) => (
                         <div key={routine.id} className="bg-card rounded-2xl border border-border overflow-hidden">
                             <button
                                 onClick={() => setExpandedRoutine(expandedRoutine === routine.id ? null : routine.id)}
@@ -165,7 +191,9 @@ export function RoutinesSection() {
                                     </div>
                                     <div className="text-left">
                                         <h3 className="font-semibold text-foreground">{routine.name}</h3>
-                                        <p className="text-sm text-muted-foreground">{routine.exercises.length} ejercicios • {routine.assignedTo.length} asignados</p>
+                                        <p className="text-sm text-muted-foreground">
+                                            {routine.exercises.length} ejercicios • {routine.assignedTo.length} asignados
+                                        </p>
                                     </div>
                                 </div>
                                 {expandedRoutine === routine.id ? (
@@ -178,7 +206,7 @@ export function RoutinesSection() {
                                 <div className="px-4 pb-4 border-t border-border pt-4 animate-fade-in">
                                     <div className="space-y-2">
                                         {routine.exercises.map((re, idx) => {
-                                            const exercise = mockExercises.find(e => e.id === re.exerciseId);
+                                            const exercise = exercises.find(e => e.id === re.exerciseId);
                                             return exercise ? (
                                                 <div key={idx} className="flex items-center gap-3 p-2 bg-muted/30 rounded-lg">
                                                     <span className="w-6 h-6 rounded-full bg-primary/20 text-primary text-xs flex items-center justify-center font-medium">{idx + 1}</span>
@@ -202,46 +230,42 @@ export function RoutinesSection() {
                             )}
                         </div>
                     ))}
+                    {routines.length === 0 && (
+                        <div className="p-12 text-center border-2 border-dashed border-border rounded-2xl bg-card">
+                            <p className="text-muted-foreground">No has creado rutinas todavía.</p>
+                        </div>
+                    )}
                 </div>
             </div>
 
-            {/* Create / Edit Routine Modal — Exercise Builder */}
             <Dialog open={isCreateModalOpen} onOpenChange={setIsCreateModalOpen}>
                 <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
                     <DialogHeader>
-                        <DialogTitle>{selectedRoutine ? 'Editar Rutina' : 'Crear Nueva Rutina'}</DialogTitle>
+                        <DialogTitle>{selectedRoutine ? 'Editar Rutina' : 'Nueva Rutina'}</DialogTitle>
                         <DialogDescription>
-                            {selectedRoutine
-                                ? 'Modifica los datos y ejercicios de la rutina'
-                                : 'Nombra tu rutina y agrega ejercicios'}
+                            Define el nombre y los ejercicios del plan
                         </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-5">
-                        {/* Routine Name */}
                         <div>
-                            <label className="text-sm font-medium text-foreground mb-2 block">
-                                Nombre de la Rutina
-                            </label>
+                            <label className="text-sm font-medium text-foreground mb-2 block">Nombre</label>
                             <Input
-                                placeholder="Ej: Fuerza Full Body"
+                                placeholder="Ej: Fuerza Inferior"
                                 value={routineName}
                                 onChange={(e) => setRoutineName(e.target.value)}
                             />
                         </div>
 
-                        {/* Exercise Selector */}
                         <div>
-                            <label className="text-sm font-medium text-foreground mb-2 block">
-                                Agregar Ejercicio
-                            </label>
+                            <label className="text-sm font-medium text-foreground mb-2 block">Agregar Ejercicio</label>
                             <div className="flex gap-2">
                                 <select
                                     value={selectedExerciseId}
                                     onChange={(e) => setSelectedExerciseId(e.target.value)}
                                     className="flex-1 h-10 rounded-xl border border-border bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
                                 >
-                                    <option value="">Seleccionar ejercicio...</option>
-                                    {mockExercises.map(ex => (
+                                    <option value="">Seleccionar...</option>
+                                    {exercises.map(ex => (
                                         <option key={ex.id} value={ex.id}>
                                             {ex.name} — {ex.muscleGroup}
                                         </option>
@@ -254,84 +278,52 @@ export function RoutinesSection() {
                                     disabled={!selectedExerciseId}
                                     className="h-10 px-4"
                                 >
-                                    <Plus className="w-4 h-4 mr-1" />
-                                    Agregar
+                                    <Plus className="w-4 h-4" />
                                 </Button>
                             </div>
                         </div>
 
-                        {/* Exercise Builder List */}
-                        <div>
-                            <label className="text-sm font-medium text-foreground mb-2 block">
-                                Ejercicios en la Rutina
-                                {modalExercises.length > 0 && (
-                                    <span className="ml-2 text-xs text-muted-foreground font-normal">
-                                        ({modalExercises.length} {modalExercises.length === 1 ? 'ejercicio' : 'ejercicios'})
-                                    </span>
-                                )}
-                            </label>
+                        <div className="space-y-2">
                             {modalExercises.length === 0 ? (
-                                <div className="flex items-center justify-center p-6 bg-muted/30 rounded-xl border border-dashed border-border">
-                                    <p className="text-sm text-muted-foreground text-center">
-                                        Aún no hay ejercicios.<br />
-                                        <span className="text-xs">Usa el selector de arriba para agregar.</span>
-                                    </p>
+                                <div className="p-6 bg-muted/30 rounded-xl border border-dashed border-border text-center text-sm text-muted-foreground">
+                                    Lista de ejercicios vacía
                                 </div>
                             ) : (
-                                <div className="space-y-2">
-                                    {modalExercises.map((ex, idx) => (
-                                        <div
-                                            key={`${ex.id}-${idx}`}
-                                            className="flex items-center gap-2 p-3 bg-muted/40 rounded-xl border border-border/50"
-                                        >
-                                            <span className="w-6 h-6 rounded-full bg-primary/20 text-primary text-xs flex items-center justify-center font-bold shrink-0">
-                                                {idx + 1}
-                                            </span>
-                                            <span className="flex-1 text-sm font-medium text-foreground truncate">
-                                                {ex.name}
-                                            </span>
-                                            <div className="flex items-center gap-1.5 shrink-0">
-                                                <Input
-                                                    type="number"
-                                                    min={1}
-                                                    value={ex.sets}
-                                                    onChange={(e) => handleUpdateExercise(idx, 'sets', e.target.value)}
-                                                    className="w-14 h-8 text-center text-xs px-1"
-                                                    title="Series"
-                                                />
-                                                <span className="text-xs text-muted-foreground">×</span>
-                                                <Input
-                                                    value={ex.reps}
-                                                    onChange={(e) => handleUpdateExercise(idx, 'reps', e.target.value)}
-                                                    className="w-16 h-8 text-center text-xs px-1"
-                                                    placeholder="Reps"
-                                                    title="Repeticiones"
-                                                />
-                                            </div>
-                                            <Button
-                                                size="sm"
-                                                variant="ghost"
-                                                className="h-8 w-8 p-0 text-destructive hover:text-destructive shrink-0"
-                                                onClick={() => handleRemoveExercise(idx)}
-                                            >
-                                                <Trash2 className="w-4 h-4" />
-                                            </Button>
+                                modalExercises.map((ex, idx) => (
+                                    <div key={`${ex.id}-${idx}`} className="flex items-center gap-2 p-3 bg-muted/40 rounded-xl border border-border/50">
+                                        <span className="w-6 h-6 rounded-full bg-primary/20 text-primary text-xs flex items-center justify-center font-bold">{idx + 1}</span>
+                                        <span className="flex-1 text-sm font-medium truncate">{ex.name}</span>
+                                        <div className="flex items-center gap-1.5">
+                                            <Input
+                                                type="number"
+                                                min={1}
+                                                value={ex.sets}
+                                                onChange={(e) => handleUpdateExercise(idx, 'sets', e.target.value)}
+                                                className="w-12 h-8 text-center text-xs"
+                                            />
+                                            <span className="text-xs text-muted-foreground">×</span>
+                                            <Input
+                                                value={ex.reps}
+                                                onChange={(e) => handleUpdateExercise(idx, 'reps', e.target.value)}
+                                                className="w-14 h-8 text-center text-xs"
+                                                placeholder="Reps"
+                                            />
                                         </div>
-                                    ))}
-                                </div>
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-8 w-8 p-0 text-destructive"
+                                            onClick={() => handleRemoveExercise(idx)}
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </Button>
+                                    </div>
+                                ))
                             )}
                         </div>
 
-                        {/* Footer Buttons */}
                         <div className="flex gap-3 pt-2">
-                            <Button
-                                variant="outline"
-                                className="flex-1"
-                                onClick={() => {
-                                    setIsCreateModalOpen(false);
-                                    setSelectedRoutine(null);
-                                }}
-                            >
+                            <Button variant="outline" className="flex-1" onClick={() => setIsCreateModalOpen(false)}>
                                 Cancelar
                             </Button>
                             <Button
@@ -347,37 +339,22 @@ export function RoutinesSection() {
                 </DialogContent>
             </Dialog>
 
-            {/* Assign Routine Modal */}
             <Dialog open={isAssignModalOpen} onOpenChange={setIsAssignModalOpen}>
                 <DialogContent className="max-w-md">
                     <DialogHeader>
-                        <DialogTitle>Asignar "{selectedRoutine?.name}" a Cliente</DialogTitle>
-                        <DialogDescription>
-                            Selecciona el cliente al que deseas asignar esta rutina
-                        </DialogDescription>
+                        <DialogTitle>Asignar a Cliente</DialogTitle>
                     </DialogHeader>
                     <div className="space-y-3 max-h-80 overflow-y-auto">
                         {clients.map((client) => (
-                            <div
-                                key={client.id}
-                                className="flex items-center justify-between p-3 bg-muted/50 rounded-xl hover:bg-muted transition-colors"
-                            >
+                            <div key={client.id} className="flex items-center justify-between p-3 bg-muted/50 rounded-xl">
                                 <div className="flex items-center gap-3">
-                                    <img
-                                        src={client.avatar}
-                                        alt={client.name}
-                                        className="w-10 h-10 rounded-xl object-cover"
-                                    />
+                                    <img src={client.avatar} alt={client.name} className="w-10 h-10 rounded-xl object-cover" />
                                     <div>
-                                        <p className="font-medium text-foreground">{client.name}</p>
-                                        <p className="text-xs text-muted-foreground">{client.email}</p>
+                                        <p className="font-medium text-foreground text-sm">{client.name}</p>
+                                        <p className="text-xs text-muted-foreground truncate max-w-[150px]">{client.email}</p>
                                     </div>
                                 </div>
-                                <Button
-                                    size="sm"
-                                    variant="secondary"
-                                    onClick={() => handleAssignToClient(client.name)}
-                                >
+                                <Button size="sm" variant="secondary" onClick={() => handleAssignToClient(client.name)}>
                                     Asignar
                                 </Button>
                             </div>

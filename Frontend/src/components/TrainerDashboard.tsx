@@ -5,8 +5,10 @@ import {
   Dumbbell, Users, ShoppingBag, CreditCard,
   LayoutDashboard, LogOut, Sun, Moon
 } from 'lucide-react';
-import { isUserAtRisk } from '@/data/mockData';
-import { DashboardSection } from '@/components/dashboard/types';
+
+// Definición local para evitar errores de importación
+type DashboardSection = 'overview' | 'routines' | 'exercises' | 'clients' | 'shop' | 'payments' | 'nutrition';
+
 import { OverviewSection } from '@/components/dashboard/OverviewSection';
 import { RoutinesSection } from '@/components/dashboard/RoutinesSection';
 import { ExercisesSection } from '@/components/dashboard/ExercisesSection';
@@ -20,7 +22,7 @@ export function TrainerDashboard() {
   const [activeSection, setActiveSection] = useState<DashboardSection>('overview');
 
   const clients = users.filter(u => u.role === 'client');
-  const atRiskClients = clients.filter(isUserAtRisk);
+  const atRiskClients: any[] = []; // Limpio de MockData
   const pendingPayments = payments.filter(p => p.status === 'pending');
 
   const sidebarItems = [
@@ -49,7 +51,6 @@ export function TrainerDashboard() {
     <div className="min-h-screen bg-background flex">
       {/* Sidebar */}
       <aside className="w-64 bg-card border-r border-border flex flex-col fixed h-full">
-        {/* Logo */}
         <div className="p-6 border-b border-border">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center">
@@ -59,7 +60,6 @@ export function TrainerDashboard() {
           </div>
         </div>
 
-        {/* Navigation */}
         <nav className="flex-1 p-4 space-y-1">
           {sidebarItems.map((item) => (
             <button
@@ -86,7 +86,6 @@ export function TrainerDashboard() {
           ))}
         </nav>
 
-        {/* Footer */}
         <div className="p-4 border-t border-border space-y-2">
           <Button variant="ghost" className="w-full justify-start" onClick={toggleTheme}>
             {theme === 'light' ? <Moon className="w-4 h-4 mr-2" /> : <Sun className="w-4 h-4 mr-2" />}

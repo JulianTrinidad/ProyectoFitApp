@@ -5,7 +5,20 @@ import { Textarea } from '@/components/ui/textarea';
 import {
     Plus, Eye, MessageCircle, TrendingUp, Check
 } from 'lucide-react';
-import { mockRoutines, isUserAtRisk, User } from '@/data/mockData';
+
+// INTERFAZ LOCAL: Mantiene la estructura para que el código no "grite"
+interface User {
+    id: string;
+    name: string;
+    email: string;
+    role: string;
+    avatar: string;
+    membershipStatus: 'active' | 'pending';
+    lastActive: Date;
+    notes: string;
+    progressPhotos: Array<{ before: string; after: string }>;
+}
+
 import { useApp } from '@/contexts/AppContext';
 import { useToast } from '@/hooks/use-toast';
 import {
@@ -19,7 +32,8 @@ export function ClientsSection() {
     const { users, updateUser } = useApp();
     const { toast } = useToast();
 
-    const clients = users.filter(u => u.role === 'client');
+    // Filtramos los usuarios que vienen del AppContext (que ya debería estar limpio)
+    const clients = users.filter(u => u.role === 'client') as User[];
 
     const [selectedClient, setSelectedClient] = useState<User | null>(null);
     const [isClientModalOpen, setIsClientModalOpen] = useState(false);
@@ -65,9 +79,13 @@ export function ClientsSection() {
                         </thead>
                         <tbody>
                             {clients.map((client) => {
-                                const atRisk = isUserAtRisk(client);
-                                const assignedRoutine = mockRoutines.find(r => r.assignedTo.includes(client.id));
-                                const daysSince = Math.floor((Date.now() - client.lastActive.getTime()) / (1000 * 60 * 60 * 24));
+                                // LIMPIEZA: Seteamos valores por defecto para evitar errores de mockData
+                                const atRisk = false;
+                                const assignedRoutine = null;
+
+                                // Verificación de fecha para evitar crasheos si el dato viene nulo
+                                const lastActiveTime = client.lastActive instanceof Date ? client.lastActive.getTime() : Date.now();
+                                const daysSince = Math.floor((Date.now() - lastActiveTime) / (1000 * 60 * 60 * 24));
 
                                 return (
                                     <tr key={client.id} className="border-t border-border hover:bg-muted/30 transition-colors">
@@ -84,7 +102,7 @@ export function ClientsSection() {
                                             </div>
                                         </td>
                                         <td className="p-4">
-                                            <span className="text-foreground">{assignedRoutine?.name || '—'}</span>
+                                            <span className="text-foreground">{(assignedRoutine as any)?.name || '—'}</span>
                                         </td>
                                         <td className="p-4">
                                             <span className={`px-3 py-1 rounded-full text-xs font-medium ${client.membershipStatus === 'active'
@@ -101,17 +119,12 @@ export function ClientsSection() {
                                         </td>
                                         <td className="p-4 text-right">
                                             <div className="flex items-center justify-end gap-2">
-                                                {atRisk && (
-                                                    <Button size="sm" variant="outline" onClick={() => handleOpenChat(client)}>
-                                                        <MessageCircle className="w-4 h-4" />
-                                                    </Button>
-                                                )}
                                                 <Button
                                                     size="sm"
                                                     variant="ghost"
                                                     onClick={() => {
                                                         setSelectedClient(client);
-                                                        setClientNotes(client.notes);
+                                                        setClientNotes(client.notes || '');
                                                         setIsClientModalOpen(true);
                                                     }}
                                                 >
@@ -127,6 +140,11 @@ export function ClientsSection() {
                             })}
                         </tbody>
                     </table>
+                    {clients.length === 0 && (
+                        <div className="p-8 text-center text-muted-foreground">
+                            No hay clientes registrados todavía.
+                        </div>
+                    )}
                 </div>
             </div>
 
@@ -138,7 +156,6 @@ export function ClientsSection() {
                     </DialogHeader>
                     {selectedClient && (
                         <div className="space-y-6">
-                            {/* Header */}
                             <div className="flex items-center gap-4">
                                 <img src={selectedClient.avatar} alt={selectedClient.name} className="w-16 h-16 rounded-2xl object-cover" />
                                 <div>
@@ -147,7 +164,6 @@ export function ClientsSection() {
                                 </div>
                             </div>
 
-                            {/* Notes */}
                             <div>
                                 <label className="text-sm font-medium text-foreground mb-2 block">Notas Privadas</label>
                                 <Textarea
@@ -161,7 +177,6 @@ export function ClientsSection() {
                                 </Button>
                             </div>
 
-                            {/* Progress Chart Placeholder */}
                             <div>
                                 <h4 className="text-sm font-medium text-foreground mb-3">Progreso</h4>
                                 <div className="h-48 bg-muted rounded-xl flex items-center justify-center">
@@ -170,8 +185,7 @@ export function ClientsSection() {
                                 </div>
                             </div>
 
-                            {/* Before/After */}
-                            {selectedClient.progressPhotos.length > 0 && (
+                            {selectedClient.progressPhotos && selectedClient.progressPhotos.length > 0 && (
                                 <div>
                                     <h4 className="text-sm font-medium text-foreground mb-3">Antes vs Después</h4>
                                     <div className="grid grid-cols-2 gap-4">

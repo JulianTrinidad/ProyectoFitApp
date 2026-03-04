@@ -1,13 +1,60 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
-    Dumbbell, Play, Timer, ChevronRight, ChevronDown, Moon, Check, X, Trophy, ListOrdered, CheckCircle2
+    Dumbbell, Play, Timer, ChevronRight, ChevronDown, Moon, X, Trophy, CheckCircle2, CheckCircle, Loader2, Clock, Check
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
-import { availableRoutines, AvailableRoutine, AvailableRoutineExercise } from '@/data/mockData';
 import { useToast } from '@/hooks/use-toast';
-import { useApp } from '@/contexts/AppContext';
+import { supabase } from '@/lib/supabase';
+
+// ── Interfaces ────────────────────────────────────────────────
+
+interface SupabaseRoutine {
+    id: string;
+    name: string;
+    duration_minutes?: number;
+}
+
+interface SupabaseRoutineExercise {
+    id: string;
+    routine_id: string;
+    sets: number;
+    reps: string;
+    rest_seconds: number;
+    order_index: number;
+    exercises: {
+        id: string;
+        name: string;
+        image_url: string;
+        instructions: string[] | null;
+        tips: string[] | null;
+    };
+}
+
+/**
+ * Representa un ejercicio individual dentro de una sesión activa.
+ */
+interface AvailableRoutineExercise {
+    id: string;
+    name: string;
+    image: string;
+    tips: string[];
+    sets: number;
+    reps: string;
+    rest: number;
+    executionSteps?: string[];
+}
+
+/**
+ * Estructura de la rutina que el usuario elige para entrenar.
+ */
+interface AvailableRoutine {
+    id: string;
+    name: string;
+    shortName: string;
+    emoji: string;
+    exercises: AvailableRoutineExercise[];
+}
 
 interface WorkoutTabProps {
     currentUser: any;
@@ -20,7 +67,13 @@ interface WorkoutTabProps {
 export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrainedToday, setHasRestedToday }: WorkoutTabProps) {
     const { toast } = useToast();
 
-    // Workout state
+    // ── Supabase-driven states ──
+    const [routines, setRoutines] = useState<SupabaseRoutine[]>([]);
+    const [selectedRoutine, setSelectedRoutine] = useState<SupabaseRoutine | null>(null);
+    const [routineExercises, setRoutineExercises] = useState<SupabaseRoutineExercise[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+
+    // ── Active workout player states ──
     const [isWorkoutActive, setIsWorkoutActive] = useState(false);
     const [currentExerciseIndex, setCurrentExerciseIndex] = useState(0);
     const [currentSet, setCurrentSet] = useState(1);
@@ -28,30 +81,105 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
     const [reps, setReps] = useState('');
     const [isResting, setIsResting] = useState(false);
     const [restTime, setRestTime] = useState(90);
-    const [selectedRoutine, setSelectedRoutine] = useState<AvailableRoutine>(availableRoutines[0]);
-    const [exercisePreview, setExercisePreview] = useState<AvailableRoutineExercise | null>(null);
     const [completedSets, setCompletedSets] = useState<Record<string, boolean[]>>({});
     const [restType, setRestType] = useState<'series' | 'exercise'>('series');
     const [setWeights, setSetWeights] = useState<Record<string, string[]>>({});
     const [isRestModeActive, setIsRestModeActive] = useState(false);
-    const [showInstructions, setShowInstructions] = useState(false);
-
-    // Rank-up modal state
     const [showRankUpModal, setShowRankUpModal] = useState(false);
     const [rankUpInfo, setRankUpInfo] = useState<{ league: string; division: number; newLeague?: boolean } | null>(null);
+    const [showInstructions, setShowInstructions] = useState(false);
+    const [hasLoggedToday, setHasLoggedToday] = useState(false);
 
-    const activeExercises = selectedRoutine.exercises;
+    // ── Fetch user's daily log to prevent farming ──
+    useEffect(() => {
+        if (!currentUser?.id) return;
 
-    // ─── Local gamification logic ───
-    const LEAGUES = ['Hierro', 'Bronce', 'Plata', 'Oro', 'Esmeralda', 'Diamante'] as const;
+        const fetchTodayLog = async () => {
+            const today = new Date().toLocaleDateString('en-CA');
+            try {
+                const { data, error } = await supabase
+                    .from('daily_logs')
+                    .select('id')
+                    .eq('user_id', currentUser.id)
+                    .eq('date', today)
+                    .limit(1);
 
-    const getLeagueIcon = (league: string) => {
-        const icons: Record<string, string> = {
-            'Hierro': '⚙️', 'Bronce': '🥉', 'Plata': '🥈',
-            'Oro': '🥇', 'Esmeralda': '💎', 'Diamante': '👑',
+                if (error) throw error;
+                if (data && data.length > 0) {
+                    setHasLoggedToday(true);
+                }
+            } catch (err) {
+                console.error('Error fetching today daily log:', err);
+            }
         };
-        return icons[league] || '🏅';
-    };
+        fetchTodayLog();
+    }, [currentUser?.id]);
+
+    // ── Fetch routines on mount (filtered by current user) ──
+    useEffect(() => {
+        if (!currentUser?.id) return;
+        const fetchRoutines = async () => {
+            try {
+                setIsLoading(true);
+                const { data, error } = await supabase
+                    .from('routines')
+                    .select('*')
+                    .eq('user_id', currentUser.id);
+                if (error) throw error;
+                if (data && data.length > 0) {
+                    setRoutines(data);
+                    setSelectedRoutine(data[0]);
+                } else {
+                    setRoutines([]);
+                }
+            } catch (err: any) {
+                console.error('Error fetching routines:', err);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        fetchRoutines();
+    }, [currentUser?.id]);
+
+    // ── Fetch exercises when selectedRoutine changes ──
+    useEffect(() => {
+        if (!selectedRoutine) {
+            setRoutineExercises([]);
+            return;
+        }
+        const fetchExercises = async () => {
+            try {
+                const { data, error } = await supabase
+                    .from('routine_exercises')
+                    .select('*, exercises(id, name, image_url, instructions, tips)')
+                    .eq('routine_id', selectedRoutine.id)
+                    .order('order_index', { ascending: true });
+                if (error) throw error;
+                setRoutineExercises(data || []);
+            } catch (err: any) {
+                console.error('Error fetching routine exercises:', err);
+                setRoutineExercises([]);
+            }
+        };
+        fetchExercises();
+    }, [selectedRoutine]);
+
+    // ── Derived data for active workout ──
+    const activeExercises: AvailableRoutineExercise[] = routineExercises.map(re => ({
+        id: re.exercises.id,
+        name: re.exercises.name,
+        image: re.exercises.image_url || '',
+        tips: re.exercises.tips || [],
+        sets: re.sets,
+        reps: re.reps,
+        rest: re.rest_seconds || 90,
+        executionSteps: re.exercises.instructions || [],
+    }));
+    const currentEx = activeExercises[currentExerciseIndex];
+    const isLastExercise = currentExerciseIndex >= activeExercises.length - 1;
+
+    // ── League helpers ──
+    const LEAGUES = ['Hierro', 'Bronce', 'Plata', 'Oro', 'Esmeralda', 'Diamante'] as const;
 
     const getLeagueColor = (league: string) => {
         const colors: Record<string, string> = {
@@ -62,8 +190,11 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
         return colors[league] || 'from-gray-400 to-gray-600';
     };
 
+    /**
+     * Procesa la ganancia de puntos y gestiona las transiciones entre divisiones y ligas.
+     */
     const addRankedPoints = (points: number, message: string) => {
-        const ranked = currentUser.ranked;
+        const ranked = currentUser?.ranked;
         if (!ranked) return;
 
         let newPoints = ranked.currentPoints + points;
@@ -91,12 +222,7 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
         }
 
         updateUser(currentUser.id, {
-            ranked: {
-                league: newLeague as any,
-                division: newDivision,
-                currentPoints: newPoints,
-                maxPoints: 100,
-            }
+            ranked: { league: newLeague as any, division: newDivision, currentPoints: newPoints, maxPoints: 100 }
         });
 
         toast({ title: `+${points} pts`, description: message });
@@ -107,8 +233,14 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
         }
     };
 
-    // ─── Workout helpers ───
+    /**
+     * Prepara el estado para comenzar la sesión de entrenamiento.
+     */
     const initWorkout = () => {
+        if (!selectedRoutine || activeExercises.length === 0) {
+            toast({ title: 'Sin ejercicios', description: 'Esta rutina no tiene ejercicios asignados.', variant: 'destructive' });
+            return;
+        }
         const initial: Record<string, boolean[]> = {};
         const initialWeights: Record<string, string[]> = {};
         activeExercises.forEach(ex => {
@@ -119,241 +251,206 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
         setSetWeights(initialWeights);
         setCurrentExerciseIndex(0);
         setCurrentSet(1);
-        setWeight('20');
-        setReps('');
-        setShowInstructions(false);
         setIsWorkoutActive(true);
+        toast({ title: 'Iniciando rutina...', description: `${selectedRoutine.name} — ¡Vamos! 💪` });
     };
 
-    const adjustWeight = (amount: number) => {
-        setWeight(prev => {
-            const val = Math.max(0, parseFloat(prev || '0') + amount);
-            return val % 1 === 0 ? val.toString() : val.toFixed(1);
-        });
+    /**
+     * Avanza al siguiente estado después de un descanso (o al omitirlo).
+     */
+    const proceedToNextStep = () => {
+        setIsResting(false);
+        const isLastSet = currentSet >= currentEx.sets;
+
+        if (isLastSet) {
+            setCurrentExerciseIndex(i => i + 1);
+            setCurrentSet(1);
+        } else {
+            setCurrentSet(s => s + 1);
+        }
+        setReps('');
     };
 
-    const handleFinishSet = () => {
+    /**
+     * Registra la serie actual, verifica si es el final de la rutina y dispara los timers de descanso.
+     */
+    const handleFinishSet = async () => {
         if (!reps) {
-            toast({
-                title: "Completa las repeticiones",
-                description: "Ingresa las repeticiones realizadas",
-                variant: "destructive"
-            });
+            toast({ title: "Atención", description: "Ingresa las repeticiones", variant: "destructive" });
             return;
         }
 
-        const currentEx = activeExercises[currentExerciseIndex];
-
+        // Marcar la serie actual como completada
         setCompletedSets(prev => {
-            const updated = { ...prev };
-            updated[currentEx.id] = [...(updated[currentEx.id] || [])];
-            updated[currentEx.id][currentSet - 1] = true;
-            return updated;
-        });
-
-        setSetWeights(prev => {
-            const updated = { ...prev };
-            updated[currentEx.id] = [...(updated[currentEx.id] || [])];
-            updated[currentEx.id][currentSet - 1] = weight;
-            return updated;
+            const updatedExSets = [...(prev[currentEx.id] || [])];
+            updatedExSets[currentSet - 1] = true;
+            return { ...prev, [currentEx.id]: updatedExSets };
         });
 
         const isLastSet = currentSet >= currentEx.sets;
-        const isLastExercise = currentExerciseIndex >= activeExercises.length - 1;
 
+        // Verificar si se completó todo el entrenamiento
         if (isLastSet && isLastExercise) {
             setIsWorkoutActive(false);
-            setCurrentExerciseIndex(0);
-            setCurrentSet(1);
-            updateUser(currentUser.id, { streak: currentUser.streak + 1, lastActive: new Date() });
             setHasTrainedToday(true);
-            toast({
-                title: "🎉 ¡Entrenamiento Completado!",
-                description: `Racha actual: ${currentUser.streak + 1} días`
-            });
+            updateUser(currentUser.id, { streak: (currentUser?.streak || 0) + 1, lastActive: new Date() });
+
+            try {
+                await supabase.from('daily_logs').upsert({
+                    user_id: currentUser.id,
+                    date: new Date().toLocaleDateString('en-CA'),
+                    activity_type: 'training'
+                });
+                setHasLoggedToday(true);
+            } catch (err) {
+                console.error('Error saving training log:', err);
+            }
+
+            toast({ title: '¡Entrenamiento completado! 🎉', description: 'Excelente trabajo hoy.' });
             return;
         }
 
-        if (isLastSet) {
-            setRestType('exercise');
-            setRestTime(180);
-            setIsResting(true);
-            const timer = setInterval(() => {
-                setRestTime(prev => {
-                    if (prev <= 1) {
-                        clearInterval(timer);
-                        setIsResting(false);
-                        setCurrentExerciseIndex(i => i + 1);
-                        setCurrentSet(1);
-                        setReps('');
-                        return 90;
-                    }
-                    return prev - 1;
-                });
-            }, 1000);
-            toast({
-                title: "¡Ejercicio completado! 💪",
-                description: "Descansa y prepara el siguiente"
-            });
-        } else {
-            setRestType('series');
-            setRestTime(currentEx.rest || 90);
-            setIsResting(true);
-            const restDuration = currentEx.rest || 90;
-            setRestTime(restDuration);
-            const timer = setInterval(() => {
-                setRestTime(prev => {
-                    if (prev <= 1) {
-                        clearInterval(timer);
-                        setIsResting(false);
-                        setCurrentSet(s => s + 1);
-                        return restDuration;
-                    }
-                    return prev - 1;
-                });
-            }, 1000);
-        }
+        // Preparar descanso
+        setIsResting(true);
+        setRestTime(isLastSet ? 180 : (currentEx.rest || 90));
+        setRestType(isLastSet ? 'exercise' : 'series');
     };
 
-    const handleRestDay = () => {
+    // ── Timer Effect ──
+    useEffect(() => {
+        let timer: NodeJS.Timeout;
+        if (isResting && restTime > 0) {
+            timer = setInterval(() => {
+                setRestTime(prev => prev - 1);
+            }, 1000);
+        } else if (isResting && restTime === 0) {
+            proceedToNextStep();
+        }
+        return () => clearInterval(timer);
+    }, [isResting, restTime]);
+
+    const handleRestDay = async () => {
         setIsRestModeActive(true);
         setHasRestedToday(true);
-        addRankedPoints(10, "Recuperación 🛌");
+        addRankedPoints(10, "Recuperación registrada 🛌");
+
+        try {
+            await supabase.from('daily_logs').upsert({
+                user_id: currentUser.id,
+                date: new Date().toLocaleDateString('en-CA'),
+                activity_type: 'rest'
+            });
+            setHasLoggedToday(true);
+        } catch (err) {
+            console.error('Error saving rest log:', err);
+        }
+
         setTimeout(() => setIsRestModeActive(false), 3000);
     };
 
-    // ─── Workout Player ───
-    if (isWorkoutActive && activeExercises.length > 0) {
-        const currentEx = activeExercises[currentExerciseIndex];
-        const setsStatus = completedSets[currentEx.id] || new Array(currentEx.sets).fill(false);
+    // ─── RENDERIZADO: INTERFAZ DE ENTRENAMIENTO EN CURSO ──────────────
+    if (isWorkoutActive && activeExercises.length > 0 && currentEx) {
+        const setsStatus = completedSets[currentEx.id] || [];
+        const totalRestTime = restType === 'exercise' ? 180 : (currentEx.rest || 90);
+        const restProgress = totalRestTime > 0 ? ((totalRestTime - restTime) / totalRestTime) : 0;
+        const circumference = 2 * Math.PI * 70;
 
         return (
-            <div className="min-h-screen flex flex-col animate-fade-in">
-                {/* Rest Timer Overlay */}
+            <div className="min-h-screen flex flex-col animate-fade-in bg-background">
+                {/* ── REST TIMER OVERLAY (Circular) ── */}
                 {isResting && (
-                    <div className="timer-overlay animate-fade-in">
-                        <div className="text-center px-6">
-                            {restType === 'exercise' ? (
-                                <>
-                                    <div className="w-20 h-20 rounded-full bg-accent/20 mx-auto mb-4 flex items-center justify-center">
-                                        <Dumbbell className="w-10 h-10 text-accent" />
-                                    </div>
-                                    <p className="text-accent font-semibold text-lg mb-2">Cambio de Ejercicio</p>
-                                    <p className="text-muted-foreground text-sm mb-4">Prepara el siguiente ejercicio</p>
-                                </>
-                            ) : (
-                                <>
-                                    <p className="text-muted-foreground mb-2">Descanso entre series</p>
-                                </>
-                            )}
-                            <div className="text-7xl font-bold text-primary mb-2">
-                                {Math.floor(restTime / 60)}:{String(restTime % 60).padStart(2, '0')}
+                    <div className="fixed inset-0 z-[100] bg-background/95 backdrop-blur-sm flex flex-col items-center justify-center animate-fade-in">
+                        <p className="text-sm font-medium text-muted-foreground mb-6 uppercase tracking-wider">
+                            {restType === 'exercise' ? 'Próximo ejercicio' : 'Descanso entre series'}
+                        </p>
+                        <div className="relative w-44 h-44 mb-8">
+                            <svg className="w-full h-full -rotate-90" viewBox="0 0 160 160">
+                                <circle cx="80" cy="80" r="70" fill="none" stroke="currentColor" strokeWidth="6" className="text-muted/20" />
+                                <circle cx="80" cy="80" r="70" fill="none" stroke="currentColor" strokeWidth="6" className="text-primary transition-all duration-1000 ease-linear" strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - restProgress)} />
+                            </svg>
+                            <div className="absolute inset-0 flex flex-col items-center justify-center">
+                                <span className="text-5xl font-black text-foreground tabular-nums">
+                                    {Math.floor(restTime / 60)}:{String(restTime % 60).padStart(2, '0')}
+                                </span>
                             </div>
-                            <p className="text-muted-foreground text-sm mb-6">
-                                {restType === 'exercise'
-                                    ? `Siguiente: ${activeExercises[currentExerciseIndex + 1]?.name || ''}`
-                                    : `Serie ${currentSet + 1} en...`}
-                            </p>
-                            <Button
-                                variant="ghost"
-                                onClick={() => {
-                                    setIsResting(false);
-                                    if (restType === 'exercise') {
-                                        setCurrentExerciseIndex(i => i + 1);
-                                        setCurrentSet(1);
-                                        setReps('');
-                                    } else {
-                                        setCurrentSet(s => s + 1);
-                                    }
-                                }}
-                            >
-                                Saltar descanso →
-                            </Button>
                         </div>
+                        {restType === 'exercise' && (
+                            <p className="text-sm text-muted-foreground mb-4">Siguiente: <span className="font-bold text-foreground">{activeExercises[currentExerciseIndex + 1]?.name || ''}</span></p>
+                        )}
+                        <Button variant="outline" className="rounded-full px-8 h-11 border-primary/30 text-primary hover:bg-primary/10" onClick={proceedToNextStep}>
+                            Saltar descanso →
+                        </Button>
                     </div>
                 )}
 
-                {/* Exercise Header */}
-                <div className="relative h-48 bg-muted">
-                    <img
-                        src={currentEx.image}
-                        alt={currentEx.name}
-                        className="w-full h-full object-cover"
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-background to-transparent" />
+                {/* ── HERO IMAGE ── */}
+                <div className="relative h-56 flex-shrink-0">
+                    {currentEx.image ? (
+                        <img src={currentEx.image} className="w-full h-full object-cover" alt={currentEx.name} />
+                    ) : (
+                        <div className="w-full h-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center">
+                            <Dumbbell className="w-16 h-16 text-primary/30" />
+                        </div>
+                    )}
+                    <div className="absolute inset-0 bg-gradient-to-t from-background via-background/40 to-transparent" />
+                    {/* Close button */}
                     <button
                         onClick={() => setIsWorkoutActive(false)}
-                        className="absolute top-4 left-4 w-10 h-10 rounded-full bg-background/80 backdrop-blur flex items-center justify-center"
+                        className="absolute top-4 left-4 w-10 h-10 rounded-full bg-black/30 backdrop-blur-md flex items-center justify-center border border-white/10 transition-colors hover:bg-black/50"
                     >
-                        <X className="w-5 h-5 text-foreground" />
+                        <X className="w-5 h-5 text-white" />
                     </button>
+                    {/* Exercise counter */}
+                    <div className="absolute top-4 right-4 bg-black/30 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/10">
+                        <span className="text-xs font-bold text-white">{currentExerciseIndex + 1}/{activeExercises.length}</span>
+                    </div>
+                    {/* Exercise name */}
                     <div className="absolute bottom-4 left-4 right-4">
-                        <p className="text-sm text-muted-foreground">
-                            Ejercicio {currentExerciseIndex + 1} de {activeExercises.length}
-                        </p>
-                        <h2 className="text-2xl font-bold text-foreground">{currentEx.name}</h2>
+                        <h2 className="text-2xl font-black text-white drop-shadow-lg leading-tight">{currentEx.name}</h2>
+                        <p className="text-xs text-white/70 mt-1">{currentEx.sets} series × {currentEx.reps} reps</p>
                     </div>
                 </div>
 
-                {/* Content - Waterfall */}
-                <div className="flex-1 p-4 space-y-4 overflow-y-auto">
-                    {/* Progress bar */}
-                    <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <span>Progreso del ejercicio</span>
-                        <span className="font-medium text-primary">{setsStatus.filter(Boolean).length}/{currentEx.sets}</span>
-                    </div>
-                    <div className="h-2 bg-muted rounded-full overflow-hidden">
-                        <div
-                            className="h-full bg-primary rounded-full transition-all duration-300"
-                            style={{ width: `${(setsStatus.filter(Boolean).length / currentEx.sets) * 100}%` }}
-                        />
-                    </div>
+                {/* ── SCROLLABLE CONTENT ── */}
+                <div className="flex-1 p-4 space-y-4 overflow-y-auto pb-28">
 
-                    {/* ─── Instructions Accordion ─── */}
-                    {(currentEx.executionSteps || currentEx.tips) && (
-                        <div className="bg-card rounded-2xl border border-border overflow-hidden">
+                    {/* ── ACCORDION: Instrucciones ── */}
+                    {(currentEx.executionSteps?.length || currentEx.tips?.length) ? (
+                        <div className="bg-card rounded-3xl border border-border shadow-soft overflow-hidden">
                             <button
-                                onClick={() => setShowInstructions(prev => !prev)}
-                                className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-muted/50 transition-colors"
+                                onClick={() => setShowInstructions(!showInstructions)}
+                                className="w-full flex items-center justify-between p-4 text-left"
                             >
-                                <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
-                                    <ListOrdered className="w-3.5 h-3.5 text-primary" />
-                                </div>
-                                <span className="flex-1 text-sm font-semibold text-foreground">Ver instrucciones del ejercicio</span>
+                                <span className="text-sm font-semibold text-foreground">Ver instrucciones del ejercicio</span>
                                 <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform duration-200 ${showInstructions ? 'rotate-180' : ''}`} />
                             </button>
-
                             {showInstructions && (
-                                <div className="px-4 pb-4 space-y-4 animate-fade-in border-t border-border pt-3">
+                                <div className="px-4 pb-4 space-y-4 animate-fade-in">
                                     {/* Paso a Paso */}
                                     {currentEx.executionSteps && currentEx.executionSteps.length > 0 && (
                                         <div>
-                                            <h5 className="font-semibold text-foreground text-xs mb-2.5 flex items-center gap-1.5">
-                                                <ListOrdered className="w-3.5 h-3.5 text-primary" />
-                                                Paso a Paso
-                                            </h5>
-                                            <div className="space-y-2.5">
-                                                {currentEx.executionSteps.map((step, si) => (
-                                                    <div key={si} className="flex items-start gap-2.5">
-                                                        <span className="w-5 h-5 rounded-full bg-primary/15 text-primary text-[10px] font-bold flex items-center justify-center flex-shrink-0 mt-0.5">
-                                                            {si + 1}
+                                            <h4 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">Paso a Paso</h4>
+                                            <div className="space-y-2">
+                                                {currentEx.executionSteps.map((step, i) => (
+                                                    <div key={i} className="flex items-start gap-3">
+                                                        <span className="w-6 h-6 rounded-full bg-primary/15 text-primary flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">
+                                                            {i + 1}
                                                         </span>
-                                                        <p className="text-sm text-muted-foreground leading-relaxed">{step}</p>
+                                                        <p className="text-sm text-foreground/80 leading-relaxed">{step}</p>
                                                     </div>
                                                 ))}
                                             </div>
                                         </div>
                                     )}
-
                                     {/* Tips Técnicos */}
                                     {currentEx.tips && currentEx.tips.length > 0 && (
                                         <div>
-                                            <h5 className="font-semibold text-foreground text-xs mb-2.5">✅ Tips Técnicos</h5>
+                                            <h4 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">Tips Técnicos</h4>
                                             <div className="space-y-2">
-                                                {currentEx.tips.map((tip, ti) => (
-                                                    <div key={ti} className="flex items-start gap-2">
-                                                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 mt-0.5 flex-shrink-0" />
-                                                        <p className="text-sm text-muted-foreground leading-relaxed">{tip}</p>
+                                                {currentEx.tips.map((tip, i) => (
+                                                    <div key={i} className="flex items-start gap-3">
+                                                        <CheckCircle className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
+                                                        <p className="text-sm text-foreground/80 leading-relaxed">{tip}</p>
                                                     </div>
                                                 ))}
                                             </div>
@@ -362,357 +459,290 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
                                 </div>
                             )}
                         </div>
-                    )}
+                    ) : null}
 
-                    {/* Custom Weight Input */}
-                    <div className="bg-card rounded-2xl border border-border p-4">
-                        <label className="text-xs text-muted-foreground mb-3 block text-center uppercase tracking-wider font-semibold">Peso (kg)</label>
-                        <div className="flex items-center justify-center gap-2">
-                            <div className="flex flex-col gap-1">
-                                <button onClick={() => adjustWeight(-5)} className="w-10 h-8 rounded-lg bg-muted hover:bg-destructive/10 text-foreground text-xs font-bold transition-colors active:scale-95">-5</button>
-                                <button onClick={() => adjustWeight(-1)} className="w-10 h-8 rounded-lg bg-muted hover:bg-destructive/10 text-foreground text-xs font-bold transition-colors active:scale-95">-1</button>
-                                <button onClick={() => adjustWeight(-0.5)} className="w-10 h-8 rounded-lg bg-muted hover:bg-destructive/10 text-foreground text-xs font-bold transition-colors active:scale-95">-0.5</button>
+                    {/* ── WEIGHT SELECTOR ── */}
+                    <div className="bg-card rounded-3xl border border-border p-5 shadow-soft">
+                        <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider text-center mb-3">Peso</p>
+                        <div className="flex items-center justify-center gap-6">
+                            <button
+                                onClick={() => setWeight(Math.max(0, parseFloat(weight) - 2.5).toString())}
+                                className="w-12 h-12 rounded-full bg-muted hover:bg-muted/80 flex items-center justify-center text-xl font-bold text-foreground transition-colors active:scale-95"
+                            >
+                                −
+                            </button>
+                            <div className="text-center">
+                                <span className="text-5xl font-black text-foreground tabular-nums">{weight}</span>
+                                <span className="text-lg font-bold text-muted-foreground ml-1">kg</span>
                             </div>
-                            <input
-                                type="text"
-                                inputMode="decimal"
-                                value={weight}
-                                onChange={(e) => setWeight(e.target.value)}
-                                className="w-28 h-20 rounded-2xl border-2 border-primary bg-primary/5 text-center text-3xl font-black text-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background"
-                            />
-                            <div className="flex flex-col gap-1">
-                                <button onClick={() => adjustWeight(5)} className="w-10 h-8 rounded-lg bg-muted hover:bg-accent/10 text-foreground text-xs font-bold transition-colors active:scale-95">+5</button>
-                                <button onClick={() => adjustWeight(1)} className="w-10 h-8 rounded-lg bg-muted hover:bg-accent/10 text-foreground text-xs font-bold transition-colors active:scale-95">+1</button>
-                                <button onClick={() => adjustWeight(0.5)} className="w-10 h-8 rounded-lg bg-muted hover:bg-accent/10 text-foreground text-xs font-bold transition-colors active:scale-95">+0.5</button>
-                            </div>
+                            <button
+                                onClick={() => setWeight((parseFloat(weight) + 2.5).toString())}
+                                className="w-12 h-12 rounded-full bg-muted hover:bg-muted/80 flex items-center justify-center text-xl font-bold text-foreground transition-colors active:scale-95"
+                            >
+                                +
+                            </button>
                         </div>
                     </div>
 
-                    {/* Reps Input */}
-                    <div className="bg-card rounded-2xl border border-border p-4">
-                        <label className="text-xs text-muted-foreground mb-2 block text-center uppercase tracking-wider font-semibold">Repeticiones</label>
+                    {/* ── REPS INPUT ── */}
+                    <div className="bg-card rounded-3xl border border-border p-4 shadow-soft">
+                        <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider text-center mb-2">Repeticiones — Serie {currentSet} de {currentEx.sets}</p>
                         <input
-                            type="text"
+                            type="number"
                             inputMode="numeric"
                             value={reps}
-                            onChange={(e) => setReps(e.target.value)}
-                            placeholder={currentEx.reps}
-                            className="w-full h-14 rounded-xl border border-border bg-background text-center text-2xl font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-primary placeholder:text-muted-foreground/40"
+                            onChange={e => setReps(e.target.value)}
+                            placeholder="0"
+                            className="w-full h-16 rounded-2xl border-2 border-primary/20 focus:border-primary bg-background text-center text-3xl font-black outline-none transition-colors"
                         />
                     </div>
 
-                    {/* Waterfall Series List */}
+                    {/* ── SERIES LIST ── */}
                     <div>
-                        <h4 className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-2">Series</h4>
+                        <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-2">Series</p>
                         <div className="space-y-2">
                             {setsStatus.map((done, idx) => {
-                                const isCurrentSeries = idx + 1 === currentSet && !done;
-                                const setW = setWeights[currentEx.id]?.[idx];
+                                const isCurrent = idx + 1 === currentSet && !done;
                                 return (
                                     <div
                                         key={idx}
-                                        className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${done
-                                            ? 'bg-success/10 border-success/30'
-                                            : isCurrentSeries
-                                                ? 'bg-primary/5 border-primary/40 shadow-sm'
-                                                : 'bg-card border-border opacity-50'
+                                        className={`p-3.5 rounded-2xl border-2 flex items-center justify-between transition-all ${done
+                                            ? 'bg-emerald-500/10 border-emerald-500/30'
+                                            : isCurrent
+                                                ? 'bg-primary/5 border-primary shadow-md'
+                                                : 'bg-muted/20 border-border'
                                             }`}
                                     >
-                                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${done ? 'bg-success text-success-foreground' : isCurrentSeries ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
-                                            }`}>
-                                            {done ? <Check className="w-4 h-4" /> : idx + 1}
-                                        </div>
-                                        <div className="flex-1">
-                                            <span className={`text-sm font-medium ${done ? 'text-success' : 'text-foreground'}`}>
+                                        <div className="flex items-center gap-3">
+                                            {done ? (
+                                                <div className="w-7 h-7 rounded-full bg-emerald-500 flex items-center justify-center">
+                                                    <Check className="w-4 h-4 text-white" />
+                                                </div>
+                                            ) : (
+                                                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${isCurrent ? 'bg-primary text-white' : 'bg-muted text-muted-foreground'
+                                                    }`}>
+                                                    {idx + 1}
+                                                </div>
+                                            )}
+                                            <span className={`text-sm font-bold ${done ? 'text-emerald-600' : isCurrent ? 'text-foreground' : 'text-muted-foreground'}`}>
                                                 Serie {idx + 1}
                                             </span>
-                                            {done && setW && (
-                                                <span className="text-xs text-muted-foreground ml-2">{setW} kg</span>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            {isCurrent && (
+                                                <span className="text-[9px] font-bold bg-primary/20 text-primary px-2 py-0.5 rounded-full uppercase">Actual</span>
+                                            )}
+                                            {done && (
+                                                <span className="text-xs text-emerald-500 font-medium">✓ Hecho</span>
                                             )}
                                         </div>
-                                        <span className="text-xs text-muted-foreground">
-                                            {currentEx.reps} reps
-                                        </span>
-                                        {isCurrentSeries && (
-                                            <span className="text-[10px] font-bold text-primary bg-primary/10 px-2 py-0.5 rounded-full">ACTUAL</span>
-                                        )}
                                     </div>
                                 );
                             })}
                         </div>
                     </div>
-
-                    {/* Next Exercise Preview */}
-                    {currentExerciseIndex < activeExercises.length - 1 && (
-                        <div className="bg-muted/50 rounded-xl p-3 flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-lg overflow-hidden bg-muted flex-shrink-0">
-                                <img src={activeExercises[currentExerciseIndex + 1].image} alt="" className="w-full h-full object-cover" />
-                            </div>
-                            <div className="text-xs">
-                                <p className="text-muted-foreground">Siguiente:</p>
-                                <p className="font-medium text-foreground">{activeExercises[currentExerciseIndex + 1].name}</p>
-                            </div>
-                        </div>
-                    )}
                 </div>
 
-                {/* Footer */}
-                <div className="p-4 pb-6 space-y-2">
-                    <Button variant="gradient" size="xl" className="w-full" onClick={handleFinishSet}>
-                        <Check className="w-5 h-5" />
-                        {currentSet >= currentEx.sets && currentExerciseIndex >= activeExercises.length - 1
-                            ? '🎉 Finalizar Entrenamiento'
-                            : currentSet >= currentEx.sets
-                                ? 'Siguiente Ejercicio →'
-                                : `Completar Serie ${currentSet}`}
+                {/* ── BOTTOM ACTION BUTTON ── */}
+                <div className="fixed bottom-0 left-0 right-0 p-4 bg-background/80 backdrop-blur-lg border-t border-border/50 z-50">
+                    <Button
+                        variant="gradient"
+                        size="xl"
+                        className="w-full rounded-2xl text-base font-bold h-14 shadow-lg"
+                        onClick={handleFinishSet}
+                    >
+                        <Check className="w-5 h-5 mr-2" />
+                        {currentSet >= currentEx.sets && isLastExercise ? 'Finalizar sesión 🎉' : 'Completar serie'}
                     </Button>
                 </div>
+            </div>
+        );
+    }
 
-                {/* Rank Up Modal */}
+    // ─── RENDERIZADO: PANTALLA DE SELECCIÓN DE RUTINA (NUEVO DISEÑO) ──
+    if (isLoading) {
+        return (
+            <div className="p-8 flex flex-col items-center justify-center min-h-[60vh]">
+                <Loader2 className="w-8 h-8 animate-spin text-primary mb-3" />
+                <p className="text-sm text-muted-foreground">Cargando rutinas…</p>
+            </div>
+        );
+    }
+
+    if (routines.length === 0) {
+        return (
+            <div className="p-4 space-y-6 animate-fade-in pb-24">
+                {isRestModeActive && (
+                    <div className="fixed inset-0 z-50 bg-background/95 flex flex-col items-center justify-center text-center p-8">
+                        <Moon className="w-16 h-16 text-warning mb-4 animate-pulse" />
+                        <h2 className="text-2xl font-bold">Modo Descanso</h2>
+                    </div>
+                )}
+                <h1 className="text-2xl font-bold">Entrenar</h1>
+                <div className="p-12 text-center border-2 border-dashed rounded-3xl">
+                    <Dumbbell className="w-14 h-14 mx-auto mb-3 text-muted-foreground/40" />
+                    <p className="text-base font-semibold text-muted-foreground">No hay rutinas asignadas aún</p>
+                    <p className="text-xs text-muted-foreground/60 mt-1">Tu entrenador las cargará pronto 💪</p>
+                </div>
+                <Button
+                    variant="outline"
+                    className="w-full h-12 rounded-2xl text-warning border-warning/30 hover:bg-warning/10"
+                    onClick={handleRestDay}
+                    disabled={hasLoggedToday}
+                >
+                    <Moon className="w-4 h-4 mr-2" /> DÍA DE DESCANSO
+                </Button>
+
                 <Dialog open={showRankUpModal} onOpenChange={setShowRankUpModal}>
-                    <DialogContent className="max-w-sm mx-auto text-center">
-                        <div className="flex flex-col items-center gap-4 py-4">
-                            <div className={`w-24 h-24 rounded-3xl bg-gradient-to-br ${getLeagueColor(rankUpInfo?.league || 'Bronce')} flex items-center justify-center text-5xl shadow-xl animate-bounce`}>
-                                {getLeagueIcon(rankUpInfo?.league || 'Bronce')}
-                            </div>
-                            <div className="space-y-2">
-                                <h2 className="text-2xl font-bold text-foreground">
-                                    {rankUpInfo?.newLeague ? '🎉 ¡Nueva Liga!' : '🏆 ¡Subiste de Rango!'}
-                                </h2>
-                                <p className="text-lg font-semibold text-primary">
-                                    {rankUpInfo?.league} {rankUpInfo?.division ? ['V', 'IV', 'III', 'II', 'I'][5 - rankUpInfo.division] : ''}
-                                </p>
-                                <p className="text-muted-foreground text-sm">
-                                    {rankUpInfo?.newLeague
-                                        ? '¡Felicitaciones! Has alcanzado una nueva liga. ¡Sigue así! 💪'
-                                        : '¡Felicitaciones! Estás un paso más cerca de la cima. ¡No pares!'}
-                                </p>
-                            </div>
-                            <Button variant="gradient" className="w-full mt-2" onClick={() => setShowRankUpModal(false)}>
-                                <Trophy className="w-5 h-5" />
-                                ¡Genial!
-                            </Button>
-                        </div>
+                    <DialogContent className="max-w-sm text-center">
+                        <div className={`w-20 h-20 rounded-2xl bg-gradient-to-br ${getLeagueColor(rankUpInfo?.league || 'Bronce')} mx-auto mb-4`} />
+                        <h2 className="text-xl font-bold">¡Subiste de Rango!</h2>
+                        <Button className="w-full mt-4" onClick={() => setShowRankUpModal(false)}>¡Genial!</Button>
                     </DialogContent>
                 </Dialog>
             </div>
         );
     }
 
-    // ─── Workout Tab (default view) ───
     return (
-        <div className="p-4 space-y-6 animate-fade-in relative">
-            {/* Rest Mode Overlay */}
+        <div className="p-4 space-y-6 animate-fade-in pb-24">
             {isRestModeActive && (
-                <div className="fixed inset-0 z-50 bg-background/95 flex flex-col items-center justify-center animate-fade-in">
-                    <div className="text-center p-8">
-                        <div className="w-32 h-32 rounded-full bg-warning/20 mx-auto mb-6 flex items-center justify-center animate-pulse">
-                            <Moon className="w-16 h-16 text-warning" />
-                        </div>
-                        <h2 className="text-3xl font-bold text-foreground mb-2">Modo Descanso</h2>
-                        <p className="text-muted-foreground text-lg mb-4">Tu cuerpo se está recuperando 💪</p>
-                        <p className="text-success text-xl font-semibold">+10 pts Recuperación</p>
-                    </div>
+                <div className="fixed inset-0 z-50 bg-background/95 flex flex-col items-center justify-center text-center p-8">
+                    <Moon className="w-16 h-16 text-warning mb-4 animate-pulse" />
+                    <h2 className="text-2xl font-bold">Modo Descanso</h2>
                 </div>
             )}
 
-            <h1 className="text-2xl font-bold text-foreground">Entrenar</h1>
+            <h1 className="text-2xl font-bold">Entrenar</h1>
 
-            {/* Routine Carousel */}
+            {/* ── SECCIÓN 1: Carrusel Horizontal de Rutinas ── */}
             <div>
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">Rutina del día</h3>
-                <div className="flex gap-3 overflow-x-auto pb-2 -mx-4 px-4 scrollbar-hide">
-                    {availableRoutines.map((routine) => (
+                <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">Mis Rutinas</h3>
+                <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-hide">
+                    {routines.map(r => (
                         <button
-                            key={routine.id}
-                            onClick={() => setSelectedRoutine(routine)}
-                            className={`flex-shrink-0 w-36 p-3 rounded-2xl border-2 transition-all duration-200 ${selectedRoutine.id === routine.id
+                            key={r.id}
+                            onClick={() => setSelectedRoutine(r)}
+                            className={`flex-shrink-0 min-w-[140px] p-4 rounded-2xl border-2 transition-all text-left ${selectedRoutine?.id === r.id
                                 ? 'border-primary bg-primary/10 shadow-md'
                                 : 'border-border bg-card hover:border-primary/30'
                                 }`}
                         >
-                            <div className="text-2xl mb-2">{routine.emoji}</div>
-                            <p className={`text-sm font-bold ${selectedRoutine.id === routine.id ? 'text-primary' : 'text-foreground'}`}>
-                                {routine.shortName}
-                            </p>
-                            <p className="text-[10px] text-muted-foreground mt-0.5">{routine.exercises.length} ejercicios</p>
+                            <Dumbbell className={`w-5 h-5 mb-2 ${selectedRoutine?.id === r.id ? 'text-primary' : 'text-muted-foreground'}`} />
+                            <p className="font-bold text-sm leading-tight line-clamp-2">{r.name}</p>
+                            {r.duration_minutes && (
+                                <p className="text-[10px] text-muted-foreground mt-1.5 flex items-center gap-1">
+                                    <Clock className="w-3 h-3" /> ~{r.duration_minutes} min
+                                </p>
+                            )}
                         </button>
                     ))}
                 </div>
             </div>
 
-            {/* Selected Routine Card */}
-            <div className="bg-card rounded-3xl border border-border p-6 shadow-soft">
-                <div className="flex items-center justify-between mb-4">
-                    <div>
-                        <p className="text-sm text-muted-foreground">Rutina Seleccionada</p>
-                        <h2 className="text-xl font-bold text-foreground">{selectedRoutine.name}</h2>
+            {/* ── SECCIÓN 2: Tarjeta de Rutina Seleccionada ── */}
+            {selectedRoutine && (
+                <div className="bg-card rounded-3xl border border-border p-5 shadow-soft">
+                    <div className="flex items-center gap-3 mb-1">
+                        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
+                            <Dumbbell className="w-5 h-5 text-primary" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <h2 className="text-lg font-bold text-foreground leading-tight">{selectedRoutine.name}</h2>
+                        </div>
                     </div>
-                    <div className="w-12 h-12 rounded-2xl bg-primary/10 flex items-center justify-center text-2xl">
-                        {selectedRoutine.emoji}
-                    </div>
-                </div>
-                <div className="flex items-center gap-4 mb-6">
-                    <div className="flex items-center gap-2">
-                        <Timer className="w-4 h-4 text-muted-foreground" />
-                        <span className="text-sm text-muted-foreground">~45 min</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <Dumbbell className="w-4 h-4 text-muted-foreground" />
-                        <span className="text-sm text-muted-foreground">{selectedRoutine.exercises.length} ejercicios</span>
-                    </div>
-                </div>
-                <Button
-                    variant="gradient"
-                    size="lg"
-                    className="w-full"
-                    onClick={initWorkout}
-                >
-                    <Play className="w-5 h-5" />
-                    COMENZAR
-                </Button>
-            </div>
-
-            {/* Exercise List Preview - Interactive */}
-            <div>
-                <h3 className="font-semibold text-foreground mb-3">Ejercicios de hoy</h3>
-                <div className="space-y-2">
-                    {selectedRoutine.exercises.map((ex, idx) => (
-                        <button
-                            key={ex.id}
-                            onClick={() => setExercisePreview(ex)}
-                            className="w-full bg-card rounded-xl border border-border p-3 flex items-center gap-3 hover:border-primary/40 transition-all active:scale-[0.98] text-left"
-                        >
-                            <div className="w-12 h-12 rounded-lg bg-muted overflow-hidden flex-shrink-0">
-                                <img src={ex.image} alt={ex.name} className="w-full h-full object-cover" />
+                    <div className="flex items-center gap-4 mt-3">
+                        {selectedRoutine.duration_minutes && (
+                            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                <Clock className="w-3.5 h-3.5" />
+                                <span>~{selectedRoutine.duration_minutes} min</span>
                             </div>
-                            <div className="flex-1 min-w-0">
-                                <p className="font-medium text-foreground text-sm truncate">{ex.name}</p>
-                                <p className="text-xs text-muted-foreground">{ex.sets} series × {ex.reps}</p>
-                            </div>
-                            <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />
-                        </button>
-                    ))}
-                </div>
-            </div>
-
-            {/* Rest Day Button */}
-            <Button
-                variant="warning"
-                size="lg"
-                className="w-full bg-warning text-warning-foreground hover:bg-warning/90"
-                onClick={handleRestDay}
-            >
-                <Moon className="w-5 h-5" />
-                DÍA DE DESCANSO
-            </Button>
-
-            {/* Custom Routines Section */}
-            {customRoutines.length > 0 && (
-                <div>
-                    <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">Mis Rutinas Personalizadas</h3>
-                    <div className="space-y-2">
-                        {customRoutines.map(routine => (
-                            <button
-                                key={routine.id}
-                                onClick={() => setSelectedRoutine(routine)}
-                                className={`w-full bg-card rounded-2xl border-2 p-4 flex items-center gap-3 transition-all text-left ${selectedRoutine.id === routine.id
-                                    ? 'border-primary bg-primary/5 shadow-md'
-                                    : 'border-border hover:border-primary/30'
-                                    }`}
-                            >
-                                <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-xl">
-                                    {routine.emoji}
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                    <p className="font-semibold text-sm text-foreground truncate">{routine.name}</p>
-                                    <p className="text-xs text-muted-foreground">{routine.exercises.length} ejercicios</p>
-                                </div>
-                                <span className="text-[10px] font-bold text-primary bg-primary/10 px-2 py-0.5 rounded-full">CUSTOM</span>
-                                <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />
-                            </button>
-                        ))}
+                        )}
+                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <Trophy className="w-3.5 h-3.5" />
+                            <span>{routineExercises.length} ejercicios</span>
+                        </div>
                     </div>
                 </div>
             )}
 
-            {/* Exercise Preview Modal */}
-            <Dialog open={!!exercisePreview} onOpenChange={(open) => !open && setExercisePreview(null)}>
-                <DialogContent className="max-w-[90vw] rounded-2xl p-0 overflow-hidden">
-                    {exercisePreview && (
-                        <>
-                            <div className="relative h-48 bg-muted">
-                                <img src={exercisePreview.image} alt={exercisePreview.name} className="w-full h-full object-cover" />
-                                <div className="absolute inset-0 bg-gradient-to-t from-background to-transparent" />
-                                <div className="absolute bottom-4 left-4 right-4">
-                                    <h2 className="text-lg font-bold text-foreground">{exercisePreview.name}</h2>
-                                </div>
-                            </div>
-                            <div className="p-5 space-y-4">
-                                <div className="flex items-center gap-3">
-                                    <Badge variant="secondary" className="text-xs">
-                                        {exercisePreview.sets} series
-                                    </Badge>
-                                    <Badge variant="secondary" className="text-xs">
-                                        {exercisePreview.reps} reps
-                                    </Badge>
-                                    <Badge variant="secondary" className="text-xs">
-                                        {exercisePreview.rest}s descanso
-                                    </Badge>
-                                </div>
-
-                                <div>
-                                    <h4 className="font-semibold text-foreground text-sm mb-2">💡 Tips Técnicos</h4>
-                                    <div className="space-y-2">
-                                        {exercisePreview.tips.map((tip, i) => (
-                                            <div key={i} className="flex items-start gap-2 text-sm">
-                                                <div className="w-5 h-5 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-                                                    <span className="text-xs font-bold text-primary">{i + 1}</span>
-                                                </div>
-                                                <p className="text-muted-foreground">{tip}</p>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-
-                                <Button
-                                    variant="secondary"
-                                    className="w-full"
-                                    onClick={() => setExercisePreview(null)}
-                                >
-                                    Cerrar
-                                </Button>
-                            </div>
-                        </>
-                    )}
-                </DialogContent>
-            </Dialog>
-
-            {/* Rank Up Modal (for rest day points) */}
-            <Dialog open={showRankUpModal} onOpenChange={setShowRankUpModal}>
-                <DialogContent className="max-w-sm mx-auto text-center">
-                    <div className="flex flex-col items-center gap-4 py-4">
-                        <div className={`w-24 h-24 rounded-3xl bg-gradient-to-br ${getLeagueColor(rankUpInfo?.league || 'Bronce')} flex items-center justify-center text-5xl shadow-xl animate-bounce`}>
-                            {getLeagueIcon(rankUpInfo?.league || 'Bronce')}
+            {/* ── SECCIÓN 3: Lista de Ejercicios ── */}
+            {selectedRoutine && (
+                <div>
+                    <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">Ejercicios de hoy</h3>
+                    {routineExercises.length === 0 ? (
+                        <div className="p-8 text-center border border-dashed border-border rounded-2xl">
+                            <p className="text-sm text-muted-foreground">Sin ejercicios asignados para esta rutina</p>
                         </div>
+                    ) : (
                         <div className="space-y-2">
-                            <h2 className="text-2xl font-bold text-foreground">
-                                {rankUpInfo?.newLeague ? '🎉 ¡Nueva Liga!' : '🏆 ¡Subiste de Rango!'}
-                            </h2>
-                            <p className="text-lg font-semibold text-primary">
-                                {rankUpInfo?.league} {rankUpInfo?.division ? ['V', 'IV', 'III', 'II', 'I'][5 - rankUpInfo.division] : ''}
-                            </p>
-                            <p className="text-muted-foreground text-sm">
-                                {rankUpInfo?.newLeague
-                                    ? '¡Felicitaciones! Has alcanzado una nueva liga. ¡Sigue así! 💪'
-                                    : '¡Felicitaciones! Estás un paso más cerca de la cima. ¡No pares!'}
-                            </p>
+                            {routineExercises.map((re, idx) => (
+                                <div
+                                    key={re.id}
+                                    className="flex items-center gap-3 p-3 bg-card rounded-2xl border border-border shadow-soft hover:shadow-md transition-all"
+                                >
+                                    {/* Thumbnail */}
+                                    <div className="w-14 h-14 rounded-xl overflow-hidden bg-muted flex-shrink-0">
+                                        {re.exercises?.image_url ? (
+                                            <img
+                                                src={re.exercises.image_url}
+                                                alt={re.exercises.name}
+                                                className="w-full h-full object-cover"
+                                            />
+                                        ) : (
+                                            <div className="w-full h-full flex items-center justify-center">
+                                                <Dumbbell className="w-5 h-5 text-muted-foreground/40" />
+                                            </div>
+                                        )}
+                                    </div>
+                                    {/* Info */}
+                                    <div className="flex-1 min-w-0">
+                                        <p className="font-semibold text-sm text-foreground leading-tight">{re.exercises?.name || 'Ejercicio'}</p>
+                                        <p className="text-xs text-muted-foreground mt-0.5">
+                                            {re.sets} series × {re.reps} reps
+                                        </p>
+                                    </div>
+                                    {/* Arrow */}
+                                    <ChevronRight className="w-4 h-4 text-muted-foreground/40 flex-shrink-0" />
+                                </div>
+                            ))}
                         </div>
-                        <Button variant="gradient" className="w-full mt-2" onClick={() => setShowRankUpModal(false)}>
-                            <Trophy className="w-5 h-5" />
-                            ¡Genial!
-                        </Button>
-                    </div>
+                    )}
+                </div>
+            )}
+
+            {/* ── SECCIÓN 4: Botones de Acción ── */}
+            <div className="space-y-3 pt-2">
+                {hasLoggedToday && (
+                    <p className="text-sm font-bold text-emerald-500 text-center flex items-center justify-center gap-1.5 mb-2 -mt-1">
+                        <CheckCircle2 className="w-4 h-4" /> Actividad de hoy completada
+                    </p>
+                )}
+                <Button
+                    variant="gradient"
+                    size="xl"
+                    className="w-full rounded-2xl text-base font-bold"
+                    onClick={initWorkout}
+                    disabled={!selectedRoutine || routineExercises.length === 0 || hasLoggedToday}
+                >
+                    <Play className="w-5 h-5 mr-2" /> COMENZAR
+                </Button>
+                <Button
+                    variant="outline"
+                    className="w-full h-12 rounded-2xl text-warning border-warning/30 hover:bg-warning/10"
+                    onClick={handleRestDay}
+                    disabled={hasLoggedToday}
+                >
+                    <Moon className="w-4 h-4 mr-2" /> DÍA DE DESCANSO
+                </Button>
+            </div>
+
+            {/* Rank Up Dialog */}
+            <Dialog open={showRankUpModal} onOpenChange={setShowRankUpModal}>
+                <DialogContent className="max-w-sm text-center">
+                    <div className={`w-20 h-20 rounded-2xl bg-gradient-to-br ${getLeagueColor(rankUpInfo?.league || 'Bronce')} mx-auto mb-4`} />
+                    <h2 className="text-xl font-bold">¡Subiste de Rango!</h2>
+                    <Button className="w-full mt-4" onClick={() => setShowRankUpModal(false)}>¡Genial!</Button>
                 </DialogContent>
             </Dialog>
         </div>

@@ -3,9 +3,19 @@ import {
     Dumbbell, Users, CreditCard,
     Plus, ChevronRight, MessageCircle, AlertCircle
 } from 'lucide-react';
-import { mockRoutines, isUserAtRisk, User } from '@/data/mockData';
 import { useApp } from '@/contexts/AppContext';
 import { DashboardSection } from './dashboardTypes';
+
+// Estructura interna necesaria
+interface User {
+    id: string;
+    name: string;
+    email: string;
+    role: string;
+    avatar: string;
+    membershipStatus: 'active' | 'pending';
+    lastActive: Date;
+}
 
 interface OverviewSectionProps {
     setActiveSection: (section: DashboardSection) => void;
@@ -14,15 +24,19 @@ interface OverviewSectionProps {
 export function OverviewSection({ setActiveSection }: OverviewSectionProps) {
     const { users, payments } = useApp();
 
-    const clients = users.filter(u => u.role === 'client');
-    const atRiskClients = clients.filter(isUserAtRisk);
+    const clients = users.filter(u => u.role === 'client') as User[];
+
+    // Lista vacía para esperar datos reales
+    const atRiskClients: User[] = [];
     const pendingPayments = payments.filter(p => p.status === 'pending');
 
     return (
         <div className="space-y-6 animate-fade-in">
-            <div>
-                <h1 className="text-3xl font-bold text-foreground">Bienvenido, Carlos 👋</h1>
-                <p className="text-muted-foreground">Aquí está el resumen de tu gimnasio</p>
+            <div className="flex items-center justify-between">
+                <div>
+                    <h1 className="text-3xl font-bold text-foreground">Panel de Control</h1>
+                    <p className="text-muted-foreground">Resumen general de actividad</p>
+                </div>
             </div>
 
             {/* Stats Grid */}
@@ -31,7 +45,9 @@ export function OverviewSection({ setActiveSection }: OverviewSectionProps) {
                     <div className="flex items-center justify-between">
                         <div>
                             <p className="text-muted-foreground text-sm">Clientes Activos</p>
-                            <p className="text-3xl font-bold text-foreground">{clients.filter(c => c.membershipStatus === 'active').length}</p>
+                            <p className="text-3xl font-bold text-foreground">
+                                {clients.filter(c => c.membershipStatus === 'active').length}
+                            </p>
                         </div>
                         <div className="w-12 h-12 rounded-2xl bg-primary/10 flex items-center justify-center">
                             <Users className="w-6 h-6 text-primary" />
@@ -41,8 +57,8 @@ export function OverviewSection({ setActiveSection }: OverviewSectionProps) {
                 <div className="stat-card">
                     <div className="flex items-center justify-between">
                         <div>
-                            <p className="text-muted-foreground text-sm">Rutinas Creadas</p>
-                            <p className="text-3xl font-bold text-foreground">{mockRoutines.length}</p>
+                            <p className="text-muted-foreground text-sm">Rutinas Totales</p>
+                            <p className="text-3xl font-bold text-foreground">0</p>
                         </div>
                         <div className="w-12 h-12 rounded-2xl bg-accent/10 flex items-center justify-center">
                             <Dumbbell className="w-6 h-6 text-accent" />
@@ -63,7 +79,7 @@ export function OverviewSection({ setActiveSection }: OverviewSectionProps) {
                 <div className="stat-card border-l-4 border-l-destructive">
                     <div className="flex items-center justify-between">
                         <div>
-                            <p className="text-muted-foreground text-sm">En Riesgo</p>
+                            <p className="text-muted-foreground text-sm">Alertas</p>
                             <p className="text-3xl font-bold text-destructive">{atRiskClients.length}</p>
                         </div>
                         <div className="w-12 h-12 rounded-2xl bg-destructive/10 flex items-center justify-center">
@@ -73,16 +89,17 @@ export function OverviewSection({ setActiveSection }: OverviewSectionProps) {
                 </div>
             </div>
 
-            {/* At Risk Clients */}
+            {/* At Risk Clients Section */}
             {atRiskClients.length > 0 && (
                 <div className="bg-card rounded-2xl border border-border p-6">
                     <div className="flex items-center gap-2 mb-4">
                         <AlertCircle className="w-5 h-5 text-destructive" />
-                        <h2 className="text-lg font-semibold text-foreground">Clientes en Riesgo de Abandono</h2>
+                        <h2 className="text-lg font-semibold text-foreground">Atención Requerida</h2>
                     </div>
                     <div className="space-y-3">
                         {atRiskClients.map((client) => {
-                            const daysSince = Math.floor((Date.now() - client.lastActive.getTime()) / (1000 * 60 * 60 * 24));
+                            const lastActiveDate = client.lastActive instanceof Date ? client.lastActive : new Date();
+                            const daysSince = Math.floor((Date.now() - lastActiveDate.getTime()) / (1000 * 60 * 60 * 24));
                             return (
                                 <div key={client.id} className="flex items-center justify-between p-3 bg-muted/50 rounded-xl">
                                     <div className="flex items-center gap-3">
@@ -92,12 +109,12 @@ export function OverviewSection({ setActiveSection }: OverviewSectionProps) {
                                         </div>
                                         <div>
                                             <p className="font-medium text-foreground">{client.name}</p>
-                                            <p className="text-sm text-muted-foreground">{daysSince} días sin entrenar</p>
+                                            <p className="text-sm text-muted-foreground">{daysSince} días sin actividad</p>
                                         </div>
                                     </div>
                                     <Button size="sm" variant="outline">
                                         <MessageCircle className="w-4 h-4 mr-1" />
-                                        Mensaje
+                                        Contactar
                                     </Button>
                                 </div>
                             );
@@ -118,8 +135,8 @@ export function OverviewSection({ setActiveSection }: OverviewSectionProps) {
                                 <Plus className="w-6 h-6 text-primary" />
                             </div>
                             <div>
-                                <p className="font-semibold text-foreground">Crear Nueva Rutina</p>
-                                <p className="text-sm text-muted-foreground">Diseña un plan personalizado</p>
+                                <p className="font-semibold text-foreground">Nueva Rutina</p>
+                                <p className="text-sm text-muted-foreground">Crear plan de entrenamiento</p>
                             </div>
                         </div>
                         <ChevronRight className="w-5 h-5 text-muted-foreground group-hover:text-primary transition-colors" />
@@ -135,8 +152,8 @@ export function OverviewSection({ setActiveSection }: OverviewSectionProps) {
                                 <CreditCard className="w-6 h-6 text-warning" />
                             </div>
                             <div>
-                                <p className="font-semibold text-foreground">Validar Pagos</p>
-                                <p className="text-sm text-muted-foreground">{pendingPayments.length} pendientes de revisión</p>
+                                <p className="font-semibold text-foreground">Gestionar Pagos</p>
+                                <p className="text-sm text-muted-foreground">{pendingPayments.length} pendientes</p>
                             </div>
                         </div>
                         <ChevronRight className="w-5 h-5 text-muted-foreground group-hover:text-primary transition-colors" />
