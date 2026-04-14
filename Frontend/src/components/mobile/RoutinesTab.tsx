@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ChevronRight, ChevronDown, ChevronUp, BookOpen, ArrowLeft, CheckCircle2, XCircle, Dumbbell, Plus, Search, X, ListOrdered, Loader2 } from 'lucide-react';
+import { ChevronRight, ChevronDown, ChevronUp, BookOpen, ArrowLeft, CheckCircle2, XCircle, Dumbbell, Plus, Search, X, ListOrdered, Loader2, Trash2 } from 'lucide-react';
 import type { RoutineView } from './mobileTypes';
 import { useToast } from '@/hooks/use-toast';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
@@ -143,6 +143,10 @@ export function RoutinesTab({ currentUser, customRoutines, setCustomRoutines }: 
     // Almacena el ID cuando venimos de "+ Sumar Ejercicios" para pisar la rutina original 
     const [ongoingEditRoutineId, setOngoingEditRoutineId] = useState<string | null>(null);
 
+    // Estados para eliminar rutinas
+    const [confirmingDelete, setConfirmingDelete] = useState(false);
+    const [isDeletingRoutine, setIsDeletingRoutine] = useState(false);
+
     // ── Derive the category name from the CATEGORIES constant ──
     const selectedCategoryName = CATEGORIES.find(c => c.id === selectedCategoryId)?.title || '';
 
@@ -153,7 +157,8 @@ export function RoutinesTab({ currentUser, customRoutines, setCustomRoutines }: 
                 setIsLoadingRoutines(true);
                 const { data, error } = await supabase
                     .from('routines')
-                    .select('id, name, duration_minutes');
+                    .select('id, name, duration_minutes')
+                    .eq('user_id', currentUser.id);
                 if (error) throw error;
                 setUserRoutines(data || []);
             } catch (err: any) {
@@ -314,7 +319,8 @@ export function RoutinesTab({ currentUser, customRoutines, setCustomRoutines }: 
             // 4. Refresh list
             const { data: refreshed } = await supabase
                 .from('routines')
-                .select('id, name, duration_minutes');
+                .select('id, name, duration_minutes')
+                .eq('user_id', currentUser.id);
             setUserRoutines(refreshed || []);
 
             toast({ title: '✅ Cambios guardados' });
@@ -337,6 +343,43 @@ export function RoutinesTab({ currentUser, customRoutines, setCustomRoutines }: 
         setSelectedExercises([...editingExercises]);
         setEditingRoutine(null);
         setView('create_routine');
+    };
+
+    /**
+     * Elimina una rutina de Supabase (routines + routine_exercises).
+     * NO toca exercise_logs ni personal_records para preservar el historial.
+     */
+    const handleDeleteRoutine = async () => {
+        if (!editingRoutine) return;
+        try {
+            setIsDeletingRoutine(true);
+
+            // 1. Borrar ejercicios de la rutina
+            const { error: delExError } = await supabase
+                .from('routine_exercises')
+                .delete()
+                .eq('routine_id', editingRoutine.id);
+            if (delExError) throw delExError;
+
+            // 2. Borrar la rutina
+            const { error: delRoutineError } = await supabase
+                .from('routines')
+                .delete()
+                .eq('id', editingRoutine.id);
+            if (delRoutineError) throw delRoutineError;
+
+            // 3. Actualizar lista local
+            setUserRoutines(prev => prev.filter(r => r.id !== editingRoutine.id));
+
+            toast({ title: '🗑️ Rutina eliminada', description: 'Tu historial y récords se mantienen intactos.' });
+            setEditingRoutine(null);
+            setConfirmingDelete(false);
+        } catch (err: any) {
+            console.error('Error deleting routine:', err);
+            toast({ title: '❌ Error al eliminar', description: err.message || 'Intentá de nuevo más tarde.', variant: 'destructive' });
+        } finally {
+            setIsDeletingRoutine(false);
+        }
     };
 
     // ─── RENDERIZADO: VISTA DE DETALLE DEL EJERCICIO ──────────────────
@@ -607,7 +650,8 @@ export function RoutinesTab({ currentUser, customRoutines, setCustomRoutines }: 
                 // PASO 3: Refrescar la lista de rutinas desde Supabase
                 const { data: refreshed } = await supabase
                     .from('routines')
-                    .select('id, name, duration_minutes');
+                    .select('id, name, duration_minutes')
+                    .eq('user_id', currentUser.id);
                 setUserRoutines(refreshed || []);
 
                 // Limpiar estados y volver a la vista principal
@@ -841,11 +885,36 @@ export function RoutinesTab({ currentUser, customRoutines, setCustomRoutines }: 
                                 )}
                             </div>
 
-                            <div className="pt-2 flex gap-3 flex-shrink-0">
-                                <button onClick={() => setEditingRoutine(null)} className="flex-1 h-12 rounded-xl border border-border font-semibold hover:bg-muted transition-colors">Cancelar</button>
-                                <button onClick={handleSaveEditChanges} disabled={isSavingEdit || !editRoutineName.trim()} className="flex-1 h-12 rounded-xl bg-primary text-primary-foreground font-bold disabled:opacity-40 flex items-center justify-center gap-2">
-                                    {isSavingEdit ? <><Loader2 className="w-4 h-4 animate-spin" /> Guardando...</> : 'Guardar Cambios'}
-                                </button>
+                            <div className="pt-2 space-y-2 flex-shrink-0">
+                                <div className="flex gap-3">
+                                    <button onClick={() => { setEditingRoutine(null); setConfirmingDelete(false); }} className="flex-1 h-12 rounded-xl border border-border font-semibold hover:bg-muted transition-colors">Cancelar</button>
+                                    <button onClick={handleSaveEditChanges} disabled={isSavingEdit || !editRoutineName.trim()} className="flex-1 h-12 rounded-xl bg-primary text-primary-foreground font-bold disabled:opacity-40 flex items-center justify-center gap-2">
+                                        {isSavingEdit ? <><Loader2 className="w-4 h-4 animate-spin" /> Guardando...</> : 'Guardar Cambios'}
+                                    </button>
+                                </div>
+                                {!confirmingDelete ? (
+                                    <button
+                                        onClick={() => setConfirmingDelete(true)}
+                                        className="w-full h-10 rounded-xl border border-red-500/20 text-red-500 text-sm font-semibold hover:bg-red-500/5 transition-colors flex items-center justify-center gap-2"
+                                    >
+                                        <Trash2 className="w-4 h-4" /> Eliminar Rutina
+                                    </button>
+                                ) : (
+                                    <div className="p-3 rounded-xl bg-red-500/5 border border-red-500/20 space-y-2">
+                                        <p className="text-xs text-red-600 dark:text-red-400 text-center font-medium">¿Seguro que querés eliminar esta rutina? Tu historial y récords no se perderán.</p>
+                                        <div className="flex gap-2">
+                                            <button onClick={() => setConfirmingDelete(false)} className="flex-1 h-10 rounded-lg border border-border text-sm font-medium hover:bg-muted transition-colors">No, cancelar</button>
+                                            <button
+                                                onClick={handleDeleteRoutine}
+                                                disabled={isDeletingRoutine}
+                                                className="flex-1 h-10 rounded-lg bg-red-500 text-white text-sm font-bold disabled:opacity-50 flex items-center justify-center gap-1.5"
+                                            >
+                                                {isDeletingRoutine ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                                                {isDeletingRoutine ? 'Eliminando...' : 'Sí, eliminar'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     )}

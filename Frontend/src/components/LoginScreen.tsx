@@ -8,7 +8,7 @@ import { Dumbbell, Eye, EyeOff, Flame, Loader2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 export function LoginScreen() {
-  const { login, setViewMode, setCurrentUser } = useApp();
+  const { login, setCurrentUser } = useApp();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);

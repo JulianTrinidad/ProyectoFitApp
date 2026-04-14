@@ -7,7 +7,7 @@ export interface User {
   id: string;
   name: string;
   email: string;
-  role: 'trainer' | 'client';
+  role: 'client' | 'trainer';
   avatar?: string;
   streak?: number;
   membershipStatus?: 'active' | 'pending';
@@ -25,30 +25,14 @@ export interface User {
   onboardingCompleted?: boolean;
 }
 
-export interface Payment {
-  id: string;
-  userId: string;
-  userName: string;
-  amount: number;
-  date: string;
-  status: 'pending' | 'completed' | 'rejected';
-  method: string;
-}
-
-type ViewMode = 'trainer' | 'client';
 type Theme = 'light' | 'dark';
 
 interface AppContextType {
-  viewMode: ViewMode;
-  setViewMode: (mode: ViewMode) => void;
   theme: Theme;
   toggleTheme: () => void;
   currentUser: User | null;
   setCurrentUser: (user: User | null) => void;
-  users: User[];
   updateUser: (userId: string, updates: Partial<User>) => void;
-  payments: Payment[];
-  updatePayment: (paymentId: string, status: Payment['status']) => void;
   isLoggedIn: boolean;
   login: (email: string, password: string) => Promise<boolean>;
   logout: () => void;
@@ -57,28 +41,14 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [viewMode, setViewMode] = useState<ViewMode>('client');
   const [theme, setTheme] = useState<Theme>('light');
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [users, setUsers] = useState<User[]>([]);
-  const [payments, setPayments] = useState<Payment[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
 
   const toggleTheme = () => {
     const newTheme = theme === 'light' ? 'dark' : 'light';
     setTheme(newTheme);
     document.documentElement.classList.toggle('dark', newTheme === 'dark');
-  };
-
-  const updateUser = (userId: string, updates: Partial<User>) => {
-    setUsers(prev => prev.map(u => u.id === userId ? { ...u, ...updates } : u));
-    if (currentUser?.id === userId) {
-      setCurrentUser(prev => prev ? { ...prev, ...updates } : null);
-    }
-  };
-
-  const updatePayment = (paymentId: string, status: Payment['status']) => {
-    setPayments(prev => prev.map(p => p.id === paymentId ? { ...p, status } : p));
   };
 
   const fetchProfile = async (userId: string, email: string) => {
@@ -90,6 +60,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
         .single();
 
       if (profile) {
+        let currentStreak = profile.streak || 0;
+        const lastActivityStr = profile.last_activity_date || profile.last_active;
+
+        if (lastActivityStr) {
+          const today = new Date();
+          const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+          
+          let lastDateObj = new Date(lastActivityStr);
+          if (typeof lastActivityStr === 'string' && lastActivityStr.includes('-')) {
+             const parts = lastActivityStr.split('T')[0].split('-');
+             if (parts.length === 3) {
+                 lastDateObj = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+             }
+          } else {
+             lastDateObj.setHours(0,0,0,0);
+          }
+          
+          const diffTime = todayDate.getTime() - lastDateObj.getTime();
+          const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+          
+          // Si pasaron 2 o más días sin entrenar/descansar, se rompe la racha
+          if (diffDays > 1 && currentStreak > 0) {
+            currentStreak = 0;
+            // Actualizamos en background la BD
+            supabase.from('profiles').update({ streak: 0 }).eq('id', profile.id).then();
+          }
+        }
+
         const safeUser: User = {
           id: profile.id,
           name: profile.name || 'Usuario',
@@ -97,8 +95,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           role: profile.role || 'client',
           membershipStatus: profile.membership_status || 'active',
           avatar: profile.avatar || `https://ui-avatars.com/api/?name=${profile.name || 'U'}`,
-          streak: profile.streak || 0,
-          lastActive: profile.last_active ? new Date(profile.last_active) : new Date(),
+          streak: currentStreak,
+          lastActive: lastActivityStr ? new Date(lastActivityStr) : new Date(),
           notes: profile.notes || '',
           progressPhotos: profile.progress_photos || [],
           assignedPlan: profile.assigned_plan || '',
@@ -112,7 +110,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
           onboardingCompleted: profile.onboarding_completed || false,
         };
         setCurrentUser(safeUser);
-        setViewMode(safeUser.role);
         setIsLoggedIn(true);
       }
     } catch (err) {
@@ -154,18 +151,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return false;
   };
 
+  const updateUser = (userId: string, updates: Partial<User>) => {
+    setCurrentUser(prev => {
+      if (!prev || prev.id !== userId) return prev;
+      return { ...prev, ...updates };
+    });
+  };
+
   const logout = async () => {
     await supabase.auth.signOut();
     setCurrentUser(null);
     setIsLoggedIn(false);
-    setViewMode('client');
   };
 
   return (
     <AppContext.Provider value={{
-      viewMode, setViewMode, theme, toggleTheme,
-      currentUser, setCurrentUser, users, updateUser,
-      payments, updatePayment, isLoggedIn, login, logout,
+      theme, toggleTheme,
+      currentUser, setCurrentUser, updateUser,
+      isLoggedIn, login, logout,
     }}>
       {children}
     </AppContext.Provider>

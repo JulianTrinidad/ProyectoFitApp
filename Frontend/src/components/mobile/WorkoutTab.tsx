@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import {
-    Dumbbell, Play, Timer, ChevronRight, ChevronDown, Moon, X, Trophy, CheckCircle2, CheckCircle, Loader2, Clock, Check
+    Dumbbell, Play, Timer, ChevronRight, ChevronLeft, ChevronDown, Moon, X, Trophy, CheckCircle2, CheckCircle, Loader2, Clock, Check, History
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
@@ -89,6 +89,48 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
     const [rankUpInfo, setRankUpInfo] = useState<{ league: string; division: number; newLeague?: boolean } | null>(null);
     const [showInstructions, setShowInstructions] = useState(false);
     const [hasLoggedToday, setHasLoggedToday] = useState(false);
+    const [isCheckingLog, setIsCheckingLog] = useState(true);
+
+    // ── Exercise history states ──
+    const [showHistoryModal, setShowHistoryModal] = useState(false);
+    const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+    const [personalRecord, setPersonalRecord] = useState<number | null>(null);
+    const [prDate, setPrDate] = useState<string | null>(null);
+
+    // ── Fetch exercise PR ──
+    const fetchExerciseHistory = async (exerciseId: string) => {
+        try {
+            setIsLoadingHistory(true);
+            setPersonalRecord(null);
+            setPrDate(null);
+
+            // Fetch all logs for this exercise and find the max weight
+            const { data, error } = await supabase
+                .from('exercise_logs')
+                .select('date, weight')
+                .eq('user_id', currentUser.id)
+                .eq('exercise_id', exerciseId);
+            if (error) throw error;
+
+            if (data && data.length > 0) {
+                let maxWeight = 0;
+                let maxDate = '';
+                data.forEach(log => {
+                    const w = parseFloat(log.weight) || 0;
+                    if (w > maxWeight) {
+                        maxWeight = w;
+                        maxDate = log.date;
+                    }
+                });
+                setPersonalRecord(maxWeight);
+                setPrDate(maxDate);
+            }
+        } catch (err) {
+            console.error('Error fetching exercise PR:', err);
+        } finally {
+            setIsLoadingHistory(false);
+        }
+    };
 
     // ── Fetch user's daily log to prevent farming ──
     useEffect(() => {
@@ -97,6 +139,7 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
         const fetchTodayLog = async () => {
             const today = new Date().toLocaleDateString('en-CA');
             try {
+                setIsCheckingLog(true);
                 const { data, error } = await supabase
                     .from('daily_logs')
                     .select('id')
@@ -110,6 +153,8 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
                 }
             } catch (err) {
                 console.error('Error fetching today daily log:', err);
+            } finally {
+                setIsCheckingLog(false);
             }
         };
         fetchTodayLog();
@@ -178,6 +223,79 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
     const currentEx = activeExercises[currentExerciseIndex];
     const isLastExercise = currentExerciseIndex >= activeExercises.length - 1;
 
+    // ── Recovery: restore mid-workout state from today's exercise_logs ──
+    useEffect(() => {
+        if (!currentUser?.id || !selectedRoutine || routineExercises.length === 0 || hasLoggedToday || isWorkoutActive) return;
+
+        const recoverWorkout = async () => {
+            const today = new Date().toLocaleDateString('en-CA');
+            try {
+                const { data, error } = await supabase
+                    .from('exercise_logs')
+                    .select('exercise_id, set_index, weight')
+                    .eq('user_id', currentUser.id)
+                    .eq('date', today)
+                    .eq('workout_id', selectedRoutine.id);
+
+                if (error) throw error;
+                if (!data || data.length === 0) return;
+
+                // Rebuild completedSets from recovered logs
+                const recovered: Record<string, boolean[]> = {};
+                const recoveredWeights: Record<string, string[]> = {};
+                activeExercises.forEach(ex => {
+                    recovered[ex.id] = new Array(ex.sets).fill(false);
+                    recoveredWeights[ex.id] = new Array(ex.sets).fill('20');
+                });
+
+                let lastWeight = '20';
+                data.forEach((log: any) => {
+                    const exId = log.exercise_id;
+                    const setIdx = (log.set_index || 1) - 1; // convert to 0-based
+                    if (recovered[exId] && setIdx >= 0 && setIdx < recovered[exId].length) {
+                        recovered[exId][setIdx] = true;
+                        recoveredWeights[exId][setIdx] = log.weight?.toString() || '20';
+                        lastWeight = log.weight?.toString() || '20';
+                    }
+                });
+
+                // Find current exercise index: first exercise with incomplete sets, or next after last completed
+                let resumeExIndex = 0;
+                let resumeSet = 1;
+                for (let i = 0; i < activeExercises.length; i++) {
+                    const ex = activeExercises[i];
+                    const sets = recovered[ex.id] || [];
+                    const firstIncomplete = sets.findIndex(s => !s);
+                    if (firstIncomplete !== -1) {
+                        resumeExIndex = i;
+                        resumeSet = firstIncomplete + 1;
+                        lastWeight = recoveredWeights[ex.id]?.[firstIncomplete > 0 ? firstIncomplete - 1 : 0] || lastWeight;
+                        break;
+                    }
+                    // All sets complete for this exercise
+                    if (i === activeExercises.length - 1) {
+                        // All exercises complete — don't recover, workout is done
+                        return;
+                    }
+                    resumeExIndex = i + 1;
+                    resumeSet = 1;
+                }
+
+                setCompletedSets(recovered);
+                setSetWeights(recoveredWeights);
+                setCurrentExerciseIndex(resumeExIndex);
+                setCurrentSet(resumeSet);
+                setWeight(lastWeight);
+                setIsWorkoutActive(true);
+                toast({ title: 'Sesión recuperada 🔄', description: 'Continuás donde dejaste.' });
+            } catch (err) {
+                console.error('Error recovering workout:', err);
+            }
+        };
+
+        recoverWorkout();
+    }, [currentUser?.id, selectedRoutine?.id, routineExercises, hasLoggedToday]);
+
     // ── League helpers ──
     const LEAGUES = ['Hierro', 'Bronce', 'Plata', 'Oro', 'Esmeralda', 'Diamante'] as const;
 
@@ -193,9 +311,15 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
     /**
      * Procesa la ganancia de puntos y gestiona las transiciones entre divisiones y ligas.
      */
-    const addRankedPoints = (points: number, message: string) => {
+    const addRankedPoints = async (points: number, message: string) => {
         const ranked = currentUser?.ranked;
         if (!ranked) return;
+
+        const LEAGUE_CONFIG: Record<string, number> = {
+            'Hierro': 200, 'Bronce': 200,
+            'Plata': 400, 'Oro': 400,
+            'Esmeralda': 500, 'Diamante': 500,
+        };
 
         let newPoints = ranked.currentPoints + points;
         let newDivision = ranked.division;
@@ -203,8 +327,10 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
         let promoted = false;
         let leagueUp = false;
 
-        while (newPoints >= 100) {
-            newPoints -= 100;
+        let requiredPts = LEAGUE_CONFIG[newLeague] || 200;
+
+        while (newPoints >= requiredPts) {
+            newPoints -= requiredPts;
             promoted = true;
             if (newDivision > 1) {
                 newDivision = (newDivision - 1) as 1 | 2 | 3 | 4 | 5;
@@ -215,15 +341,24 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
                     newDivision = 5;
                     leagueUp = true;
                 } else {
-                    newPoints = 100;
+                    newPoints = requiredPts;
                     break;
                 }
             }
+            // Update required points for the (possibly new) league
+            requiredPts = LEAGUE_CONFIG[newLeague] || 200;
         }
 
-        updateUser(currentUser.id, {
-            ranked: { league: newLeague as any, division: newDivision, currentPoints: newPoints, maxPoints: 100 }
-        });
+        const newRanked = { league: newLeague as any, division: newDivision, currentPoints: newPoints, maxPoints: LEAGUE_CONFIG[newLeague] || 200 };
+
+        updateUser(currentUser.id, { ranked: newRanked });
+
+        // Persistir en Supabase
+        try {
+            await supabase.from('profiles').update({ ranked: newRanked }).eq('id', currentUser.id);
+        } catch (err) {
+            console.error('Error persisting ranked points:', err);
+        }
 
         toast({ title: `+${points} pts`, description: message });
 
@@ -237,6 +372,10 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
      * Prepara el estado para comenzar la sesión de entrenamiento.
      */
     const initWorkout = () => {
+        if (isWorkoutActive) {
+            toast({ title: 'Sesión en curso', description: 'Ya tenés una sesión activa.' });
+            return;
+        }
         if (!selectedRoutine || activeExercises.length === 0) {
             toast({ title: 'Sin ejercicios', description: 'Esta rutina no tiene ejercicios asignados.', variant: 'destructive' });
             return;
@@ -260,7 +399,8 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
      */
     const proceedToNextStep = () => {
         setIsResting(false);
-        const isLastSet = currentSet >= currentEx.sets;
+        const currentTotalSets = completedSets[currentEx.id]?.length || currentEx.sets;
+        const isLastSet = currentSet >= currentTotalSets;
 
         if (isLastSet) {
             setCurrentExerciseIndex(i => i + 1);
@@ -269,6 +409,20 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
             setCurrentSet(s => s + 1);
         }
         setReps('');
+    };
+
+    /**
+     * Elimina una serie planificada (no completada, no actual) del ejercicio en curso.
+     */
+    const removePlannedSet = (indexToRemove: number) => {
+        const currentTotalSets = completedSets[currentEx.id]?.length || currentEx.sets;
+        if (currentTotalSets <= 1) return;
+
+        setCompletedSets(prev => {
+            const updated = [...(prev[currentEx.id] || [])];
+            updated.splice(indexToRemove, 1);
+            return { ...prev, [currentEx.id]: updated };
+        });
     };
 
     /**
@@ -287,26 +441,104 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
             return { ...prev, [currentEx.id]: updatedExSets };
         });
 
-        const isLastSet = currentSet >= currentEx.sets;
+        const currentTotalSets = completedSets[currentEx.id]?.length || currentEx.sets;
+        const isLastSet = currentSet >= currentTotalSets;
+
+        // Check PR bonus BEFORE saving
+        const currentWeight = parseFloat(weight) || 0;
+        let prBonus = false;
+        if (personalRecord !== null && currentWeight > personalRecord) {
+            prBonus = true;
+        }
+
+        // Guardar cada serie (delete + insert para máxima compatibilidad)
+        try {
+            const todayDate = new Date().toLocaleDateString('en-CA');
+
+            // 1. Borrar registro previo de esta serie si existe
+            await supabase.from('exercise_logs').delete().match({
+                user_id: currentUser.id,
+                date: todayDate,
+                exercise_id: currentEx.id,
+                set_index: currentSet
+            });
+
+            // 2. Insertar el nuevo registro
+            const { error: insertError } = await supabase.from('exercise_logs').insert({
+                user_id: currentUser.id,
+                date: todayDate,
+                workout_id: selectedRoutine?.id,
+                exercise_id: currentEx.id,
+                set_index: currentSet,
+                weight: weight.toString(),
+                reps: reps.toString()
+            });
+
+            if (insertError) {
+                console.error('Supabase insert error:', insertError);
+                toast({ title: 'Error al guardar serie', description: insertError.message || 'No se pudo registrar en la base de datos.', variant: 'destructive' });
+            }
+        } catch (err: any) {
+            console.error('Error de red insertando exercise_log:', err);
+            toast({ title: 'Error al guardar serie', description: 'No se pudo conectar con la base de datos.', variant: 'destructive' });
+        }
+
+        // PR bonus per set
+        if (prBonus) {
+            addRankedPoints(15, 'NUEVO RÉCORD PERSONAL 🏆');
+        }
 
         // Verificar si se completó todo el entrenamiento
         if (isLastSet && isLastExercise) {
-            setIsWorkoutActive(false);
-            setHasTrainedToday(true);
-            updateUser(currentUser.id, { streak: (currentUser?.streak || 0) + 1, lastActive: new Date() });
+            const todayDate = new Date().toLocaleDateString('en-CA');
 
             try {
-                await supabase.from('daily_logs').upsert({
-                    user_id: currentUser.id,
-                    date: new Date().toLocaleDateString('en-CA'),
-                    activity_type: 'training'
-                });
-                setHasLoggedToday(true);
-            } catch (err) {
-                console.error('Error saving training log:', err);
-            }
+                // 1. Eliminar cualquier registro previo de hoy (evita conflictos)
+                await supabase.from('daily_logs').delete().match({ user_id: currentUser.id, date: todayDate });
 
-            toast({ title: '¡Entrenamiento completado! 🎉', description: 'Excelente trabajo hoy.' });
+                // 2. Insertar el entrenamiento limpio
+                const { error } = await supabase.from('daily_logs').insert({
+                    user_id: currentUser.id,
+                    date: todayDate,
+                    activity_type: 'workout',
+                    workout_id: selectedRoutine?.id
+                });
+
+                if (error) throw error; // Si hay error, salta al catch y NO muestra el éxito
+
+                // 3. Bloquear UI al instante
+                setHasTrainedToday(true);
+                if (typeof setHasLoggedToday === 'function') setHasLoggedToday(true);
+
+                // 4. Puntos + racha
+                const newStreak = (currentUser?.streak || 0) + 1;
+                updateUser(currentUser.id, { streak: newStreak, lastActive: new Date() });
+
+                // +5 pts base por entrenamiento
+                addRankedPoints(5, 'Entrenamiento completado 💪');
+
+                // Bono de racha cada 3 días
+                if (newStreak % 3 === 0) {
+                    addRankedPoints(10, 'BONO RACHA 3 DÍAS 🔥');
+                }
+
+                // Persistir last_activity_date en Supabase
+                try {
+                    await supabase.from('profiles').update({
+                        streak: newStreak,
+                        last_activity_date: new Date().toLocaleDateString('en-CA')
+                    }).eq('id', currentUser.id);
+                } catch (e) {
+                    console.error('Error updating streak:', e);
+                }
+
+                toast({ title: '¡Entrenamiento completado! 🎉', description: `+5 pts • Racha: ${newStreak} días` });
+                setIsWorkoutActive(false);
+
+            } catch (err: any) {
+                console.error('Error salvando log:', err);
+                toast({ title: 'Error de conexión', description: err.message || 'No se pudo guardar el progreso.', variant: 'destructive' });
+            }
             return;
         }
 
@@ -332,17 +564,51 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
     const handleRestDay = async () => {
         setIsRestModeActive(true);
         setHasRestedToday(true);
-        addRankedPoints(10, "Recuperación registrada 🛌");
+
+        const todayDate = new Date().toLocaleDateString('en-CA');
 
         try {
-            await supabase.from('daily_logs').upsert({
+            // 1. Eliminar cualquier registro previo de hoy
+            await supabase.from('daily_logs').delete().match({ user_id: currentUser.id, date: todayDate });
+
+            // 2. Insertar descanso limpio
+            const { error } = await supabase.from('daily_logs').insert({
                 user_id: currentUser.id,
-                date: new Date().toLocaleDateString('en-CA'),
+                date: todayDate,
                 activity_type: 'rest'
             });
+
+            if (error) throw error;
+
+            // 3. Puntos + racha
+            const newStreak = (currentUser?.streak || 0) + 1;
+            updateUser(currentUser.id, { streak: newStreak, lastActive: new Date() });
+
+            // +10 pts por descanso
+            addRankedPoints(10, 'Recuperación registrada 🛋');
+
+            // Bono de racha cada 3 días
+            if (newStreak % 3 === 0) {
+                addRankedPoints(10, 'BONO RACHA 3 DÍAS 🔥');
+            }
+
+            // Persistir streak en Supabase
+            try {
+                await supabase.from('profiles').update({
+                    streak: newStreak,
+                    last_activity_date: todayDate
+                }).eq('id', currentUser.id);
+            } catch (e) {
+                console.error('Error updating streak:', e);
+            }
+
+            // 4. Actualizar UI
             setHasLoggedToday(true);
-        } catch (err) {
+            toast({ title: 'Modo Descanso', description: `+10 pts • Racha: ${newStreak} días` });
+
+        } catch (err: any) {
             console.error('Error saving rest log:', err);
+            toast({ title: 'Error', description: err.message || 'No se pudo guardar el descanso.', variant: 'destructive' });
         }
 
         setTimeout(() => setIsRestModeActive(false), 3000);
@@ -351,6 +617,7 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
     // ─── RENDERIZADO: INTERFAZ DE ENTRENAMIENTO EN CURSO ──────────────
     if (isWorkoutActive && activeExercises.length > 0 && currentEx) {
         const setsStatus = completedSets[currentEx.id] || [];
+        const currentTotalSets = setsStatus.length || currentEx.sets;
         const totalRestTime = restType === 'exercise' ? 180 : (currentEx.rest || 90);
         const restProgress = totalRestTime > 0 ? ((totalRestTime - restTime) / totalRestTime) : 0;
         const circumference = 2 * Math.PI * 70;
@@ -407,7 +674,7 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
                     {/* Exercise name */}
                     <div className="absolute bottom-4 left-4 right-4">
                         <h2 className="text-2xl font-black text-white drop-shadow-lg leading-tight">{currentEx.name}</h2>
-                        <p className="text-xs text-white/70 mt-1">{currentEx.sets} series × {currentEx.reps} reps</p>
+                        <p className="text-xs text-white/70 mt-1">{currentTotalSets} series × {currentEx.reps} reps</p>
                     </div>
                 </div>
 
@@ -463,7 +730,17 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
 
                     {/* ── WEIGHT SELECTOR ── */}
                     <div className="bg-card rounded-3xl border border-border p-5 shadow-soft">
-                        <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider text-center mb-3">Peso</p>
+                        <div className="flex items-center justify-between mb-3">
+                            <div />
+                            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Peso</p>
+                            <button
+                                onClick={() => { fetchExerciseHistory(currentEx.id); setShowHistoryModal(true); }}
+                                className="flex items-center gap-1 text-[10px] font-semibold text-primary hover:text-primary/80 transition-colors"
+                            >
+                                <History className="w-3.5 h-3.5" />
+                                Historial
+                            </button>
+                        </div>
                         <div className="flex items-center justify-center gap-6">
                             <button
                                 onClick={() => setWeight(Math.max(0, parseFloat(weight) - 2.5).toString())}
@@ -486,7 +763,7 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
 
                     {/* ── REPS INPUT ── */}
                     <div className="bg-card rounded-3xl border border-border p-4 shadow-soft">
-                        <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider text-center mb-2">Repeticiones — Serie {currentSet} de {currentEx.sets}</p>
+                        <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider text-center mb-2">Repeticiones — Serie {currentSet} de {currentTotalSets}</p>
                         <input
                             type="number"
                             inputMode="numeric"
@@ -535,6 +812,14 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
                                             {done && (
                                                 <span className="text-xs text-emerald-500 font-medium">✓ Hecho</span>
                                             )}
+                                            {!done && !isCurrent && currentTotalSets > 1 && (
+                                                <button
+                                                    onClick={() => removePlannedSet(idx)}
+                                                    className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-destructive/10 transition-colors"
+                                                >
+                                                    <X className="w-4 h-4 text-muted-foreground hover:text-destructive" />
+                                                </button>
+                                            )}
                                         </div>
                                     </div>
                                 );
@@ -542,6 +827,41 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
                         </div>
                     </div>
                 </div>
+
+                {/* ── HISTORY MODAL ── */}
+                <Dialog open={showHistoryModal} onOpenChange={setShowHistoryModal}>
+                    <DialogContent className="max-w-[92vw] sm:max-w-sm rounded-3xl p-6" aria-describedby={undefined}>
+                        <h2 className="text-lg font-bold flex items-center gap-2 mb-4">
+                            <Trophy className="w-5 h-5 text-yellow-500" />
+                            Récord Personal
+                        </h2>
+                        <p className="text-xs text-muted-foreground mb-4">{currentEx?.name}</p>
+
+                        {isLoadingHistory ? (
+                            <div className="flex justify-center py-8">
+                                <Loader2 className="w-6 h-6 animate-spin text-primary" />
+                            </div>
+                        ) : personalRecord !== null && personalRecord > 0 ? (
+                            <div className="p-6 rounded-2xl bg-gradient-to-br from-yellow-500/10 to-amber-500/5 border border-yellow-500/20 text-center">
+                                <span className="text-4xl mb-2 block">🏆</span>
+                                <div className="flex items-baseline justify-center gap-2">
+                                    <span className="font-black text-4xl tabular-nums text-foreground">{personalRecord}</span>
+                                    <span className="text-lg font-bold text-muted-foreground">kg</span>
+                                </div>
+                                {prDate && (
+                                    <p className="text-sm text-muted-foreground mt-3">
+                                        Logrado el {new Date(prDate + 'T12:00:00').toLocaleDateString('es-AR', { day: '2-digit', month: 'long', year: 'numeric' })}
+                                    </p>
+                                )}
+                            </div>
+                        ) : (
+                            <div className="text-center py-8">
+                                <Dumbbell className="w-10 h-10 mx-auto mb-2 text-muted-foreground/30" />
+                                <p className="text-sm text-muted-foreground">Aún no hay registros para este ejercicio</p>
+                            </div>
+                        )}
+                    </DialogContent>
+                </Dialog>
 
                 {/* ── BOTTOM ACTION BUTTON ── */}
                 <div className="fixed bottom-0 left-0 right-0 p-4 bg-background/80 backdrop-blur-lg border-t border-border/50 z-50">
@@ -552,7 +872,7 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
                         onClick={handleFinishSet}
                     >
                         <Check className="w-5 h-5 mr-2" />
-                        {currentSet >= currentEx.sets && isLastExercise ? 'Finalizar sesión 🎉' : 'Completar serie'}
+                        {currentSet >= currentTotalSets && isLastExercise ? 'Finalizar sesión 🎉' : 'Completar serie'}
                     </Button>
                 </div>
             </div>
@@ -588,7 +908,7 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
                     variant="outline"
                     className="w-full h-12 rounded-2xl text-warning border-warning/30 hover:bg-warning/10"
                     onClick={handleRestDay}
-                    disabled={hasLoggedToday}
+                    disabled={hasLoggedToday || isCheckingLog}
                 >
                     <Moon className="w-4 h-4 mr-2" /> DÍA DE DESCANSO
                 </Button>
@@ -723,7 +1043,7 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
                     size="xl"
                     className="w-full rounded-2xl text-base font-bold"
                     onClick={initWorkout}
-                    disabled={!selectedRoutine || routineExercises.length === 0 || hasLoggedToday}
+                    disabled={!selectedRoutine || routineExercises.length === 0 || hasLoggedToday || isCheckingLog}
                 >
                     <Play className="w-5 h-5 mr-2" /> COMENZAR
                 </Button>
@@ -731,7 +1051,7 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
                     variant="outline"
                     className="w-full h-12 rounded-2xl text-warning border-warning/30 hover:bg-warning/10"
                     onClick={handleRestDay}
-                    disabled={hasLoggedToday}
+                    disabled={hasLoggedToday || isCheckingLog}
                 >
                     <Moon className="w-4 h-4 mr-2" /> DÍA DE DESCANSO
                 </Button>

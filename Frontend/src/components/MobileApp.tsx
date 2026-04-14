@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useApp } from '@/contexts/AppContext';
 import { supabase } from '@/lib/supabase';
 import {
-  Home, Dumbbell, Apple, User, BookOpen
+  Home, Dumbbell, Apple, User, BookOpen, LayoutDashboard
 } from 'lucide-react';
 
 // Imports de los nuevos componentes modulares
@@ -25,6 +25,7 @@ import { RoutinesTab } from './mobile/RoutinesTab';
 import { ShopTab } from './mobile/ShopTab';
 import { ProfileTab } from './mobile/ProfileTab';
 import { OnboardingFlow } from './mobile/OnboardingFlow';
+import { TrainerDashboardTab } from './mobile/TrainerDashboardTab';
 
 export function MobileApp() {
   const { currentUser, updateUser, logout, toggleTheme, theme } = useApp();
@@ -111,6 +112,8 @@ export function MobileApp() {
             logout={logout}
           />
         );
+      case 'dashboard':
+        return <TrainerDashboardTab currentUser={currentUser} />;
       default:
         return (
           <HomeTab

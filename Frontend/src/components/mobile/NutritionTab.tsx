@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-    ChevronRight, ChevronLeft, Camera, Plus, Trash2, Sparkles
+    ChevronRight, ChevronLeft, Camera, Plus, Trash2, Sparkles, Droplets, Scale, Ruler
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -8,7 +8,6 @@ import { Calendar } from '@/components/ui/calendar';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { HydrationTracker } from '@/components/HydrationTracker';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/lib/supabase';
 import { format, isToday, subDays, addDays } from 'date-fns';
@@ -20,6 +19,9 @@ interface NutritionLogItem {
     name: string;
     quantity: string;
     calories: number;
+    protein: number;
+    carbs: number;
+    fats: number;
 }
 
 interface NutritionLog {
@@ -74,12 +76,16 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
     const [modalOpen, setModalOpen] = useState(false);
     const [modalMealName, setModalMealName] = useState('');
     const [modalItems, setModalItems] = useState<NutritionLogItem[]>([
-        { name: '', quantity: '', calories: 0 }
+        { name: '', quantity: '', calories: 0, protein: 0, carbs: 0, fats: 0 }
     ]);
     const [addToExistingLogId, setAddToExistingLogId] = useState<string | null>(null);
 
-    // ─── CELEBRACIÓN AGUA ────────────────────────────────────────────
+    // ── PESO ACTUAL ──
+    const [weightCurrent, setWeightCurrent] = useState<number>(currentUser?.weight_current || currentUser?.weight || 0);
+
+    // ── CELEBRACIÓN AGUA ────────────────────────────────────────
     const [showWaterCelebration, setShowWaterCelebration] = useState(false);
+    const [waterRewardGiven, setWaterRewardGiven] = useState(false);
 
     // ─── RANKED POINTS (SIN TOCAR) ───────────────────────────────────
     const LEAGUES = ['Hierro', 'Bronce', 'Plata', 'Oro', 'Esmeralda', 'Diamante'] as const;
@@ -87,44 +93,64 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
     const addRankedPoints = async (points: number, message: string) => {
         const ranked = currentUser?.ranked;
         if (!ranked) return;
+
+        const LEAGUE_CONFIG: Record<string, number> = {
+            'Hierro': 200, 'Bronce': 200,
+            'Plata': 400, 'Oro': 400,
+            'Esmeralda': 500, 'Diamante': 500,
+        };
+
         let newPoints = ranked.currentPoints + points;
         let newDivision = ranked.division;
         let newLeague = ranked.league;
-        while (newPoints >= 100) {
-            newPoints -= 100;
+        let requiredPts = LEAGUE_CONFIG[newLeague] || 200;
+
+        while (newPoints >= requiredPts) {
+            newPoints -= requiredPts;
             if (newDivision > 1) {
                 newDivision = (newDivision - 1) as 1 | 2 | 3 | 4 | 5;
             } else {
                 const li = LEAGUES.indexOf(newLeague as typeof LEAGUES[number]);
                 if (li < LEAGUES.length - 1) { newLeague = LEAGUES[li + 1]; newDivision = 5; }
-                else { newPoints = 100; break; }
+                else { newPoints = requiredPts; break; }
             }
+            requiredPts = LEAGUE_CONFIG[newLeague] || 200;
         }
-        updateUser(currentUser.id, {
-            ranked: { league: newLeague as any, division: newDivision, currentPoints: newPoints, maxPoints: 100 }
-        });
+
+        const newRanked = { league: newLeague as any, division: newDivision, currentPoints: newPoints, maxPoints: LEAGUE_CONFIG[newLeague] || 200 };
+        updateUser(currentUser.id, { ranked: newRanked });
 
         await supabase
             .from('profiles')
-            .update({ ranked: { league: newLeague, division: newDivision, currentPoints: newPoints, maxPoints: 100 } })
+            .update({ ranked: newRanked })
             .eq('id', currentUser.id);
 
         toast({ title: `+${points} pts`, description: message });
     };
 
-    // ─── AGUA (SIN TOCAR) ────────────────────────────────────────────
+    // ── AGUA ────────────────────────────────────────────────
     const handleAddWater = (amount: number) => {
         setWaterIntake(prev => {
-            const newAmount = prev + amount;
-            const prevBottle = Math.floor(prev / 4000);
-            const newBottle = Math.floor(newAmount / 4000);
-            if (newBottle > prevBottle) {
-                setShowWaterCelebration(true);
-                addRankedPoints(10, `¡Meta alcanzada! 💧`);
-                setTimeout(() => setShowWaterCelebration(false), 3000);
+            if (prev >= 8000) {
+                return prev;
             }
-            return newAmount;
+            return Math.min(prev + amount, 8000);
         });
+
+        // Side-effects fuera del updater para evitar "Cannot update while rendering"
+        if (waterIntake >= 8000) {
+            toast({ title: 'Límite diario alcanzado', description: '¡Excelente hidratación! Has llegado al máximo de 8 litros hoy. 🚰' });
+            return;
+        }
+        const newAmount = Math.min(waterIntake + amount, 8000);
+        const prevBottle = Math.floor(waterIntake / 4000);
+        const newBottle = Math.floor(newAmount / 4000);
+        if (newBottle > prevBottle && !waterRewardGiven) {
+            setShowWaterCelebration(true);
+            setWaterRewardGiven(true);
+            addRankedPoints(15, '¡Meta de hidratación! 💧');
+            setTimeout(() => setShowWaterCelebration(false), 3000);
+        }
     };
 
     // ─── SCANNER (SIN TOCAR) ─────────────────────────────────────────
@@ -180,6 +206,9 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
                 user_id: currentUser.id,
                 meal_name: mealName,
                 total_calories: totalCalories,
+                total_protein: items.reduce((sum, item) => sum + (item.protein || 0), 0),
+                total_carbs: items.reduce((sum, item) => sum + (item.carbs || 0), 0),
+                total_fats: items.reduce((sum, item) => sum + (item.fats || 0), 0),
                 items: items,
                 log_date: dateStr,
             });
@@ -207,6 +236,9 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
             .update({
                 items: updatedItems,
                 total_calories: updatedCalories,
+                total_protein: updatedItems.reduce((sum, item) => sum + (item.protein || 0), 0),
+                total_carbs: updatedItems.reduce((sum, item) => sum + (item.carbs || 0), 0),
+                total_fats: updatedItems.reduce((sum, item) => sum + (item.fats || 0), 0),
             })
             .eq('id', logId);
 
@@ -239,19 +271,19 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
     const openModalNewMeal = () => {
         setAddToExistingLogId(null);
         setModalMealName('');
-        setModalItems([{ name: '', quantity: '', calories: 0 }]);
+        setModalItems([{ name: '', quantity: '', calories: 0, protein: 0, carbs: 0, fats: 0 }]);
         setModalOpen(true);
     };
 
     const openModalAddToMeal = (log: NutritionLog) => {
         setAddToExistingLogId(log.id);
         setModalMealName(log.meal_name);
-        setModalItems([{ name: '', quantity: '', calories: 0 }]);
+        setModalItems([{ name: '', quantity: '', calories: 0, protein: 0, carbs: 0, fats: 0 }]);
         setModalOpen(true);
     };
 
     const addItemRow = () => {
-        setModalItems(prev => [...prev, { name: '', quantity: '', calories: 0 }]);
+        setModalItems(prev => [...prev, { name: '', quantity: '', calories: 0, protein: 0, carbs: 0, fats: 0 }]);
     };
 
     const removeItemRow = (index: number) => {
@@ -261,8 +293,8 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
     const updateItemField = (index: number, field: keyof NutritionLogItem, value: string | number) => {
         setModalItems(prev => prev.map((item, i) => {
             if (i !== index) return item;
-            if (field === 'calories') {
-                return { ...item, [field]: typeof value === 'string' ? (parseInt(value) || 0) : value };
+            if (field === 'calories' || field === 'protein' || field === 'carbs' || field === 'fats') {
+                return { ...item, [field]: typeof value === 'string' ? (parseFloat(value) || 0) : value };
             }
             return { ...item, [field]: value };
         }));
@@ -289,8 +321,20 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
 
         setModalOpen(false);
         setModalMealName('');
-        setModalItems([{ name: '', quantity: '', calories: 0 }]);
+        setModalItems([{ name: '', quantity: '', calories: 0, protein: 0, carbs: 0, fats: 0 }]);
         setAddToExistingLogId(null);
+    };
+
+    // ── UPDATE WEIGHT ──
+    const handleUpdateWeight = async () => {
+        if (!currentUser?.id || !weightCurrent) return;
+        try {
+            await supabase.from('profiles').update({ weight_current: weightCurrent }).eq('id', currentUser.id);
+            updateUser(currentUser.id, { weight_current: weightCurrent });
+            toast({ title: 'Peso actualizado ✅' });
+        } catch (err) {
+            console.error('Error updating weight:', err);
+        }
     };
 
     // ─── TOTAL DEL DÍA ──────────────────────────────────────────────
@@ -312,12 +356,66 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
 
             <h1 className="text-2xl font-bold text-foreground">Nutrición</h1>
 
-            {/* Hidratación */}
-            <HydrationTracker
-                waterIntake={waterIntake}
-                onAddWater={handleAddWater}
-                onReset={() => setWaterIntake(0)}
-            />
+            {/* Hidratación compacta */}
+            <div className="bg-card rounded-2xl border border-border shadow-sm overflow-hidden relative">
+                {/* Fill effect */}
+                <div
+                    className="absolute inset-0 bg-blue-500/10 transition-all duration-700"
+                    style={{ width: `${Math.min((waterIntake / 8000) * 100, 100)}%` }}
+                />
+                <div className="relative p-4 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <Droplets className="w-5 h-5 text-blue-500" />
+                        <div>
+                            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Hidratación</p>
+                            <p className="text-lg font-bold text-foreground tabular-nums">{waterIntake} <span className="text-xs font-medium text-muted-foreground">/ 8000 ml</span></p>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                        <button
+                            onClick={() => handleAddWater(250)}
+                            className="px-3 py-1.5 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400 text-xs font-bold hover:bg-blue-500/25 transition-colors active:scale-95"
+                        >
+                            +250
+                        </button>
+                        <button
+                            onClick={() => handleAddWater(500)}
+                            className="px-3 py-1.5 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400 text-xs font-bold hover:bg-blue-500/25 transition-colors active:scale-95"
+                        >
+                            +500
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            {/* Card Peso y Altura */}
+            <div className="bg-card rounded-2xl border border-border p-4 shadow-sm">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Peso y Altura</p>
+                <div className="grid grid-cols-3 gap-3">
+                    <div className="bg-muted/50 rounded-xl p-3 text-center">
+                        <Scale className="w-4 h-4 text-muted-foreground mx-auto mb-1" />
+                        <p className="text-[10px] text-muted-foreground">Peso Inicial</p>
+                        <p className="text-sm font-bold text-foreground">{currentUser?.weight || '—'} kg</p>
+                    </div>
+                    <div className="bg-muted/50 rounded-xl p-3 text-center">
+                        <Scale className="w-4 h-4 text-primary mx-auto mb-1" />
+                        <p className="text-[10px] text-muted-foreground">Peso Actual</p>
+                        <input
+                            type="number"
+                            value={weightCurrent || ''}
+                            onChange={(e) => setWeightCurrent(parseFloat(e.target.value) || 0)}
+                            onBlur={handleUpdateWeight}
+                            className="w-full text-sm font-bold text-foreground text-center bg-transparent outline-none"
+                            placeholder="—"
+                        />
+                    </div>
+                    <div className="bg-muted/50 rounded-xl p-3 text-center">
+                        <Ruler className="w-4 h-4 text-muted-foreground mx-auto mb-1" />
+                        <p className="text-[10px] text-muted-foreground">Altura</p>
+                        <p className="text-sm font-bold text-foreground">{currentUser?.height || '—'} cm</p>
+                    </div>
+                </div>
+            </div>
 
             {/* Toggle Dieta / Escáner */}
             <div className="flex gap-2 p-1 bg-muted rounded-xl">
@@ -409,18 +507,20 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
                                             <span className="text-orange-500 font-semibold text-sm">
                                                 {log.total_calories} kcal
                                             </span>
-                                            <button
-                                                onClick={() => openModalAddToMeal(log)}
-                                                className="w-9 h-9 rounded-full bg-orange-50 dark:bg-orange-950/40 flex items-center justify-center hover:bg-orange-100 dark:hover:bg-orange-900/50 transition-colors"
-                                            >
-                                                <Plus className="w-4 h-4 text-orange-600 dark:text-orange-400" />
-                                            </button>
+                                            {isToday(nutritionDate) && (
+                                                <button
+                                                    onClick={() => openModalAddToMeal(log)}
+                                                    className="w-9 h-9 rounded-full bg-orange-50 dark:bg-orange-950/40 flex items-center justify-center hover:bg-orange-100 dark:hover:bg-orange-900/50 transition-colors"
+                                                >
+                                                    <Plus className="w-4 h-4 text-orange-600 dark:text-orange-400" />
+                                                </button>
+                                            )}
                                         </div>
                                     </div>
 
                                     {/* Lista de ítems */}
                                     {log.items && log.items.length > 0 && (
-                                        <div className="px-5 pb-4 space-y-3">
+                                        <div className="px-5 pb-2 space-y-3">
                                             <div className="border-t border-border/50 pt-3 space-y-3">
                                                 {log.items.map((item, idx) => (
                                                     <div key={idx} className="flex items-center justify-between">
@@ -439,16 +539,27 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
                                         </div>
                                     )}
 
-                                    {/* Footer: Eliminar */}
-                                    <div className="px-5 pb-4 flex justify-end">
-                                        <button
-                                            onClick={() => deleteLog(log.id)}
-                                            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-destructive transition-colors py-1 px-2 rounded-lg hover:bg-destructive/10"
-                                        >
-                                            <Trash2 className="w-3.5 h-3.5" />
-                                            Eliminar
-                                        </button>
+                                    {/* Macro breakdown row */}
+                                    <div className="px-5 pb-3">
+                                        <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+                                            <span className="text-blue-500 font-semibold">P: {log.items?.reduce((s: number, it: any) => s + (it.protein || 0), 0)}g</span>
+                                            <span className="text-yellow-500 font-semibold">C: {log.items?.reduce((s: number, it: any) => s + (it.carbs || 0), 0)}g</span>
+                                            <span className="text-rose-500 font-semibold">G: {log.items?.reduce((s: number, it: any) => s + (it.fats || 0), 0)}g</span>
+                                        </div>
                                     </div>
+
+                                    {/* Footer: Eliminar */}
+                                    {isToday(nutritionDate) && (
+                                        <div className="px-5 pb-4 flex justify-end">
+                                            <button
+                                                onClick={() => deleteLog(log.id)}
+                                                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-destructive transition-colors py-1 px-2 rounded-lg hover:bg-destructive/10"
+                                            >
+                                                <Trash2 className="w-3.5 h-3.5" />
+                                                Eliminar
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
                             ))}
 
@@ -462,15 +573,17 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
                             )}
 
                             {/* Botón principal AGREGAR COMIDA */}
-                            <Button
-                                variant="gradient"
-                                size="xl"
-                                className="w-full"
-                                onClick={openModalNewMeal}
-                            >
-                                <Plus className="w-5 h-5" />
-                                AGREGAR COMIDA
-                            </Button>
+                            {isToday(nutritionDate) && (
+                                <Button
+                                    variant="gradient"
+                                    size="xl"
+                                    className="w-full"
+                                    onClick={openModalNewMeal}
+                                >
+                                    <Plus className="w-5 h-5" />
+                                    AGREGAR COMIDA
+                                </Button>
+                            )}
                         </div>
                     )}
                 </div>
@@ -509,7 +622,7 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
 
             {/* ── MODAL: AGREGAR / EDITAR COMIDA ─────────────────────────── */}
             <Dialog open={modalOpen} onOpenChange={(open) => { if (!open) setModalOpen(false); }}>
-                <DialogContent className="max-w-[95vw] sm:max-w-lg rounded-2xl max-h-[85vh] overflow-y-auto">
+                <DialogContent className="max-w-[95vw] sm:max-w-lg rounded-2xl max-h-[85vh] overflow-y-auto" aria-describedby={undefined}>
                     <DialogHeader>
                         <DialogTitle className="text-lg">
                             {addToExistingLogId ? `Añadir a ${modalMealName}` : 'Nueva Comida'}
@@ -562,8 +675,41 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
                                             type="number"
                                             value={item.calories || ''}
                                             onChange={(e) => updateItemField(index, 'calories', e.target.value)}
-                                            className="rounded-lg bg-background text-sm w-24"
+                                            className="rounded-lg bg-background text-sm w-20"
                                         />
+                                    </div>
+                                    {/* Macro inputs */}
+                                    <div className="flex gap-2">
+                                        <div className="flex-1">
+                                            <label className="text-[10px] text-blue-500 font-semibold">Prot (g)</label>
+                                            <Input
+                                                type="number"
+                                                placeholder="0"
+                                                value={item.protein || ''}
+                                                onChange={(e) => updateItemField(index, 'protein', e.target.value)}
+                                                className="rounded-lg bg-background text-sm h-8"
+                                            />
+                                        </div>
+                                        <div className="flex-1">
+                                            <label className="text-[10px] text-yellow-500 font-semibold">Carbs (g)</label>
+                                            <Input
+                                                type="number"
+                                                placeholder="0"
+                                                value={item.carbs || ''}
+                                                onChange={(e) => updateItemField(index, 'carbs', e.target.value)}
+                                                className="rounded-lg bg-background text-sm h-8"
+                                            />
+                                        </div>
+                                        <div className="flex-1">
+                                            <label className="text-[10px] text-rose-500 font-semibold">Grasas (g)</label>
+                                            <Input
+                                                type="number"
+                                                placeholder="0"
+                                                value={item.fats || ''}
+                                                onChange={(e) => updateItemField(index, 'fats', e.target.value)}
+                                                className="rounded-lg bg-background text-sm h-8"
+                                            />
+                                        </div>
                                     </div>
                                 </div>
                             ))}

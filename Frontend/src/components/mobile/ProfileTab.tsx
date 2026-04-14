@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Trophy, Phone, FileHeart, Sparkles, Dumbbell, Calendar, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Moon, Phone as PhoneIcon, Lock, Crown, Users, Camera, Loader2, Clock, Check, Pencil } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
@@ -17,6 +17,8 @@ import avatarMaleLower from '@/assets/avatar-male-lower.png';
 import avatarMaleUpper from '@/assets/avatar-male-upper.png';
 import avatarFemaleLower from '@/assets/avatar-female-lower.png';
 import avatarFemaleUpper from '@/assets/avatar-female-upper.png';
+
+import { TrainerDashboardTab } from './TrainerDashboardTab';
 
 interface ProfileTabProps {
     currentUser: any;
@@ -48,6 +50,7 @@ interface MedicalForm {
     currentMeds: string;
     allergies: string;
     recentInjuries: string;
+    gender: string;
 }
 
 const INITIAL_MEDICAL_FORM: MedicalForm = {
@@ -56,23 +59,17 @@ const INITIAL_MEDICAL_FORM: MedicalForm = {
     heartDisease: false, chestPainActivity: false, chestPainRest: false,
     dizziness: false, boneIssues: false, asthma: false, surgery: false,
     heartMeds: false, pregnancy: false, diabetes: false,
-    currentMeds: '', allergies: '', recentInjuries: '',
+    currentMeds: '', allergies: '', recentInjuries: '', gender: '',
 };
 
-interface LeaderboardUser {
-    id: string;
-    name: string;
-    avatar: string;
-    league: string;
-    points: number;
-}
+
 
 export function ProfileTab({ currentUser, updateUser, toggleTheme, theme, logout }: ProfileTabProps) {
     const { toast } = useToast();
     const [showMedicalDialog, setShowMedicalDialog] = useState(false);
     const [showLeaguesDialog, setShowLeaguesDialog] = useState(false);
-    const [showRankingDialog, setShowRankingDialog] = useState(false);
-    const [rankingFilter, setRankingFilter] = useState<'global' | 'gym'>('global');
+    const [showTrainerDashboard, setShowTrainerDashboard] = useState(false);
+
     const [expandedLeague, setExpandedLeague] = useState<string | null>(null);
 
     const [showProgressDialog, setShowProgressDialog] = useState(false);
@@ -136,18 +133,97 @@ export function ProfileTab({ currentUser, updateUser, toggleTheme, theme, logout
         }
     };
 
-    const leaderboard = useMemo(() => {
-        if (!currentUser) return [];
-        const userEntry: LeaderboardUser = {
-            id: currentUser.id,
-            name: currentUser.name,
-            avatar: currentUser.avatar,
-            league: currentUser.ranked?.league || 'Hierro',
-            points: currentUser.ranked?.currentPoints || 0,
-        };
-        // Solo retornamos al usuario real sin mezclar con mocks
-        return [userEntry];
-    }, [currentUser]);
+    // ── Leaderboard state & fetch ──
+    const [leaderboard, setLeaderboard] = useState<any[]>([]);
+    const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
+
+    // ── Personal Records states ──
+    const [showRecordsDialog, setShowRecordsDialog] = useState(false);
+    const [selectedSlots, setSelectedSlots] = useState<(null | { id: string; name: string; pr: number })[]>([null, null, null, null, null]);
+    const [isExerciseSelectorOpen, setIsExerciseSelectorOpen] = useState(false);
+    const [activeSlotIndex, setActiveSlotIndex] = useState(0);
+    const [availableExercises, setAvailableExercises] = useState<any[]>([]);
+    const [exerciseSearchQuery, setExerciseSearchQuery] = useState('');
+
+    const LEAGUE_WEIGHTS: Record<string, number> = {
+        'Supremo': 7, 'Diamante': 6, 'Esmeralda': 5,
+        'Oro': 4, 'Plata': 3, 'Bronce': 2, 'Hierro': 1,
+    };
+
+    const fetchLeaderboard = useCallback(async () => {
+        try {
+            const { data, error } = await supabase
+                .from('profiles')
+                .select('id, name, avatar, ranked');
+            if (error) throw error;
+            if (!data) return;
+
+            const sorted = data
+                .map((u: any) => ({
+                    id: u.id,
+                    name: u.name || 'Atleta',
+                    avatar: u.avatar,
+                    league: u.ranked?.league || 'Hierro',
+                    division: u.ranked?.division || 5,
+                    points: u.ranked?.currentPoints || 0,
+                }))
+                .sort((a: any, b: any) => {
+                    const wA = LEAGUE_WEIGHTS[a.league] || 0;
+                    const wB = LEAGUE_WEIGHTS[b.league] || 0;
+                    if (wA !== wB) return wB - wA;
+                    if (a.division !== b.division) return a.division - b.division;
+                    return b.points - a.points;
+                });
+
+            setLeaderboard(sorted);
+        } catch (err) {
+            console.error('Error fetching leaderboard:', err);
+        }
+    }, []);
+
+    const handleOpenLeaderboard = () => {
+        setIsLeaderboardOpen(true);
+        fetchLeaderboard();
+    };
+
+    // ── Personal Records functions ──
+    const fetchPRForExercise = async (exerciseId: string, exerciseName: string, slotIndex: number) => {
+        try {
+            const { data } = await supabase
+                .from('personal_records')
+                .select('max_weight')
+                .eq('user_id', currentUser.id)
+                .eq('exercise_id', exerciseId)
+                .limit(1)
+                .single();
+
+            const pr = data?.max_weight ?? 0;
+            setSelectedSlots(prev => {
+                const updated = [...prev];
+                updated[slotIndex] = { id: exerciseId, name: exerciseName, pr };
+                return updated;
+            });
+        } catch (err) {
+            console.error('Error fetching PR:', err);
+            setSelectedSlots(prev => {
+                const updated = [...prev];
+                updated[slotIndex] = { id: exerciseId, name: exerciseName, pr: 0 };
+                return updated;
+            });
+        }
+    };
+
+    const openExerciseSelector = async (slotIndex: number) => {
+        setActiveSlotIndex(slotIndex);
+        setExerciseSearchQuery('');
+        try {
+            const { data } = await supabase.from('exercises').select('id, name').order('name');
+            setAvailableExercises(data || []);
+        } catch (err) {
+            console.error('Error fetching exercises:', err);
+        }
+        setIsExerciseSelectorOpen(true);
+    };
 
     const getLeagueIconText = (league: string) => {
         const icons: Record<string, string> = { 'Hierro': '⚙️', 'Bronce': '🥉', 'Plata': '🥈', 'Oro': '🥇', 'Esmeralda': '💎', 'Diamante': '👑' };
@@ -163,7 +239,30 @@ export function ProfileTab({ currentUser, updateUser, toggleTheme, theme, logout
     const [showDayDetailDialog, setShowDayDetailDialog] = useState(false);
 
     // Workout calendar data from daily_logs
-    const [workoutCalendar, setWorkoutCalendar] = useState<Record<string, { status: 'training' | 'rest'; routine?: any }>>({});
+    const [workoutCalendar, setWorkoutCalendar] = useState<Record<string, { status: 'workout' | 'rest'; workout_id?: string; routine?: any }>>({});
+
+    // Day detail states
+    const [selectedRoutineData, setSelectedRoutineData] = useState<any>(null);
+    const [selectedExerciseLogs, setSelectedExerciseLogs] = useState<any[]>([]);
+    const [isLoadingDayDetail, setIsLoadingDayDetail] = useState(false);
+
+    // ── Streak reset check ──
+    useEffect(() => {
+        if (!currentUser?.id) return;
+        const checkStreak = async () => {
+            try {
+                const { data, error } = await supabase.rpc('check_and_reset_streak', { p_user_id: currentUser.id });
+                if (error) throw error;
+                // If streak was reset, update local state
+                if (data !== null && data !== undefined && data !== currentUser.streak) {
+                    updateUser(currentUser.id, { streak: data });
+                }
+            } catch (err) {
+                console.error('Error checking streak:', err);
+            }
+        };
+        checkStreak();
+    }, [currentUser?.id]);
 
     useEffect(() => {
         if (!currentUser?.id) return;
@@ -172,16 +271,18 @@ export function ProfileTab({ currentUser, updateUser, toggleTheme, theme, logout
             try {
                 const { data, error } = await supabase
                     .from('daily_logs')
-                    .select('date, activity_type')
+                    .select('date, activity_type, workout_id')
                     .eq('user_id', currentUser.id);
 
                 if (error) throw error;
 
                 if (data) {
-                    const calendarMap: Record<string, { status: 'training' | 'rest'; routine?: any }> = {};
+                    const calendarMap: Record<string, { status: 'workout' | 'rest'; workout_id?: string; routine?: any }> = {};
                     data.forEach((log: any) => {
-                        calendarMap[log.date] = {
-                            status: log.activity_type as 'training' | 'rest'
+                        const dateString = log.date.split('T')[0];
+                        calendarMap[dateString] = {
+                            status: log.activity_type as 'workout' | 'rest',
+                            workout_id: log.workout_id
                         };
                     });
                     setWorkoutCalendar(calendarMap);
@@ -194,14 +295,47 @@ export function ProfileTab({ currentUser, updateUser, toggleTheme, theme, logout
         fetchDailyLogs();
     }, [currentUser?.id, calendarMonth]);
 
-    const getDayStatus = useCallback((date: Date): 'training' | 'rest' | null => {
+    const getDayStatus = useCallback((date: Date): 'workout' | 'rest' | null => {
         const key = format(date, 'yyyy-MM-dd');
         return workoutCalendar[key]?.status || null;
     }, [workoutCalendar]);
 
-    const handleDayClick = (date: Date) => {
+    const handleDayClick = async (date: Date) => {
         setSelectedDay(date);
+        const dateString = format(date, 'yyyy-MM-dd');
+        const dayData = workoutCalendar[dateString];
+
         setShowDayDetailDialog(true);
+
+        if (dayData?.status === 'workout' && dayData.workout_id) {
+            setIsLoadingDayDetail(true);
+            try {
+                // Fetch routine
+                const { data: routineData } = await supabase
+                    .from('routines')
+                    .select('*, routine_exercises(*, exercises(*))')
+                    .eq('id', dayData.workout_id)
+                    .single();
+
+                // Fetch exercise logs
+                const { data: logsData } = await supabase
+                    .from('exercise_logs')
+                    .select('*')
+                    .eq('date', dateString)
+                    .eq('user_id', currentUser.id)
+                    .order('set_index', { ascending: true });
+
+                setSelectedRoutineData(routineData);
+                setSelectedExerciseLogs(logsData || []);
+            } catch (err) {
+                console.error("Error fetching day details:", err);
+            } finally {
+                setIsLoadingDayDetail(false);
+            }
+        } else {
+            setSelectedRoutineData(null);
+            setSelectedExerciseLogs([]);
+        }
     };
 
 
@@ -298,6 +432,7 @@ export function ProfileTab({ currentUser, updateUser, toggleTheme, theme, logout
                 const league = currentUser.ranked?.league || 'Hierro';
                 const division = currentUser.ranked?.division || 5;
                 const points = currentUser.ranked?.currentPoints || 0;
+                const maxPoints = currentUser.ranked?.maxPoints || 200;
                 const gender = currentUser.gender || 'male';
                 const tier = ['Hierro', 'Bronce'].includes(league) ? 'low' : ['Plata', 'Oro'].includes(league) ? 'mid' : 'high';
 
@@ -320,18 +455,60 @@ export function ProfileTab({ currentUser, updateUser, toggleTheme, theme, logout
                             </div>
                             <div className="flex-1">
                                 <p className="text-2xl font-black tracking-tight text-white">{league} {division}</p>
-                                <p className="text-xs text-white/80">{points}/100 pts para subir</p>
+                                <p className="text-xs text-white/80">{points}/{maxPoints} pts para subir</p>
                             </div>
                             <img src={avatarSrc} alt="avatar" className="w-16 h-20 object-contain drop-shadow-lg" />
                         </div>
                         <div className="space-y-2">
                             <div className="h-2.5 bg-black/20 rounded-full overflow-hidden">
-                                <div className="h-full bg-white rounded-full transition-all duration-700" style={{ width: `${points}%` }} />
+                                <div className="h-full bg-white rounded-full transition-all duration-700" style={{ width: `${(points / maxPoints) * 100}%` }} />
                             </div>
                         </div>
                     </button>
                 );
             })()}
+
+            {/* Ranking Global Trophy Button */}
+            <button
+                onClick={handleOpenLeaderboard}
+                className="w-[85%] mx-auto h-20 bg-gradient-to-b from-yellow-300 via-yellow-500 to-yellow-700 rounded-t-lg rounded-b-[4rem] shadow-[0_15px_30px_-10px_rgba(202,138,4,0.6)] border-b-[10px] border-yellow-800 flex items-center justify-center transition-all active:scale-95 cursor-pointer hover:brightness-110 my-8"
+            >
+                <span className="text-yellow-950 font-black tracking-widest uppercase text-lg drop-shadow-sm">
+                    RANKING GLOBAL 🏆
+                </span>
+            </button>
+
+            {/* Mis Récords Personales Button */}
+            <button
+                onClick={() => setShowRecordsDialog(true)}
+                className="w-full rounded-2xl border border-violet-500/20 bg-card p-4 flex items-center gap-3 transition-all hover:border-violet-500/40 hover:shadow-md active:scale-[0.98] cursor-pointer"
+            >
+                <div className="w-11 h-11 rounded-xl bg-violet-500/15 flex items-center justify-center">
+                    <Dumbbell className="w-5 h-5 text-violet-500" />
+                </div>
+                <div className="flex-1 text-left">
+                    <p className="font-bold text-sm text-foreground">MIS RÉCORDS PERSONALES</p>
+                    <p className="text-[10px] text-muted-foreground">Visualizá tus PRs por ejercicio</p>
+                </div>
+                <ChevronRight className="w-4 h-4 text-muted-foreground" />
+            </button>
+
+            {/* Dashboard Entrenador Button (Solo Trainers) */}
+            {currentUser?.role === 'trainer' && (
+                <button
+                    onClick={() => setShowTrainerDashboard(true)}
+                    className="w-full rounded-2xl border border-orange-500/20 bg-card p-4 flex items-center gap-3 transition-all hover:border-orange-500/40 hover:shadow-md active:scale-[0.98] cursor-pointer"
+                >
+                    <div className="w-11 h-11 rounded-xl bg-orange-500/15 flex items-center justify-center">
+                        <Users className="w-5 h-5 text-orange-500" />
+                    </div>
+                    <div className="flex-1 text-left">
+                        <p className="font-bold text-sm text-foreground">DASHBOARD DE ENTRENADOR</p>
+                        <p className="text-[10px] text-muted-foreground">Gestioná tus clientes y asigná rutinas</p>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                </button>
+            )}
 
             {/* Calendar */}
             <div className="bg-card rounded-3xl border border-border p-4 shadow-soft">
@@ -346,7 +523,7 @@ export function ProfileTab({ currentUser, updateUser, toggleTheme, theme, logout
                     {eachDayOfInterval({ start: startOfMonth(calendarMonth), end: endOfMonth(calendarMonth) }).map(date => {
                         const status = getDayStatus(date);
                         let dayClass = 'bg-transparent text-muted-foreground';
-                        if (status === 'training') dayClass = 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20';
+                        if (status === 'workout') dayClass = 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20';
                         if (status === 'rest') dayClass = 'bg-orange-500/10 text-orange-600 border border-orange-500/20';
                         return (
                             <button key={date.toString()} onClick={() => handleDayClick(date)} className={`aspect-square rounded-lg flex items-center justify-center text-xs font-bold transition-colors ${dayClass}`}>
@@ -384,8 +561,16 @@ export function ProfileTab({ currentUser, updateUser, toggleTheme, theme, logout
             </div>
 
             {/* Dialogs */}
+            <Dialog open={showTrainerDashboard} onOpenChange={setShowTrainerDashboard}>
+                <DialogContent className="max-w-[92vw] rounded-3xl p-0 max-h-[85vh] overflow-hidden flex flex-col bg-background border-border" aria-describedby={undefined}>
+                    <div className="flex-1 overflow-y-auto w-full h-full relative">
+                        <TrainerDashboardTab currentUser={currentUser} />
+                    </div>
+                </DialogContent>
+            </Dialog>
+
             <Dialog open={showMedicalDialog} onOpenChange={setShowMedicalDialog}>
-                <DialogContent className="max-w-[92vw] rounded-3xl p-6 max-h-[85vh] overflow-y-auto">
+                <DialogContent className="max-w-[92vw] rounded-3xl p-6 max-h-[85vh] overflow-y-auto" aria-describedby={undefined}>
                     <DialogHeader><DialogTitle className="flex items-center gap-2"><FileHeart className="text-primary" /> Ficha Médica</DialogTitle></DialogHeader>
                     <div className="space-y-6 py-4">
 
@@ -393,40 +578,15 @@ export function ProfileTab({ currentUser, updateUser, toggleTheme, theme, logout
                         <div>
                             <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">Datos Personales</h3>
                             <div className="grid grid-cols-2 gap-3">
-                                <div className="space-y-1.5 col-span-2"><Label className="text-xs">Nombre Completo</Label><Input placeholder="Juan Pérez" value={medicalForm.fullName} onChange={(e) => setMedicalForm(prev => ({ ...prev, fullName: e.target.value }))} /></div>
+                                <div className="space-y-1.5"><Label className="text-xs">Nombre Completo</Label><Input placeholder="Juan Pérez" value={medicalForm.fullName} onChange={(e) => setMedicalForm(prev => ({ ...prev, fullName: e.target.value }))} /></div>
+                                <div className="space-y-1.5"><Label className="text-xs">Sexo</Label><Select value={medicalForm.gender} onValueChange={(value) => setMedicalForm(prev => ({ ...prev, gender: value }))}><SelectTrigger><SelectValue placeholder="Seleccionar" /></SelectTrigger><SelectContent><SelectItem value="male">Masculino</SelectItem><SelectItem value="female">Femenino</SelectItem></SelectContent></Select></div>
                                 <div className="space-y-1.5"><Label className="text-xs">Fecha de Nacimiento</Label><Input type="date" value={medicalForm.birthDate} onChange={(e) => setMedicalForm(prev => ({ ...prev, birthDate: e.target.value }))} /></div>
                                 <div className="space-y-1.5"><Label className="text-xs">DNI</Label><Input placeholder="12345678" value={medicalForm.dni} onChange={(e) => setMedicalForm(prev => ({ ...prev, dni: e.target.value }))} /></div>
-                                <div className="space-y-1.5"><Label className="text-xs">Teléfono Personal</Label><Input type="tel" placeholder="+54 11 1234-5678" value={medicalForm.personalPhone} onChange={(e) => setMedicalForm(prev => ({ ...prev, personalPhone: e.target.value }))} /></div>
+                                <div className="space-y-1.5 col-span-2"><Label className="text-xs">Teléfono Personal</Label><Input type="tel" placeholder="+54 11 1234-5678" value={medicalForm.personalPhone} onChange={(e) => setMedicalForm(prev => ({ ...prev, personalPhone: e.target.value }))} /></div>
                                 <div className="space-y-1.5"><Label className="text-xs">Contacto de Emergencia</Label><Input placeholder="Nombre del contacto" value={medicalForm.emergencyContactName} onChange={(e) => setMedicalForm(prev => ({ ...prev, emergencyContactName: e.target.value }))} /></div>
-                                <div className="space-y-1.5 col-span-2"><Label className="text-xs">Teléfono de Emergencia</Label><Input type="tel" placeholder="+54 11 8765-4321" value={medicalForm.emergencyPhone} onChange={(e) => setMedicalForm(prev => ({ ...prev, emergencyPhone: e.target.value }))} /></div>
+                                <div className="space-y-1.5"><Label className="text-xs">Tel. de Emergencia</Label><Input type="tel" placeholder="+54 11 8765-4321" value={medicalForm.emergencyPhone} onChange={(e) => setMedicalForm(prev => ({ ...prev, emergencyPhone: e.target.value }))} /></div>
                                 <div className="space-y-1.5"><Label className="text-xs">Peso (kg)</Label><Input type="number" placeholder="75" value={medicalForm.weight} onChange={(e) => setMedicalForm(prev => ({ ...prev, weight: e.target.value }))} /></div>
                                 <div className="space-y-1.5"><Label className="text-xs">Altura (cm)</Label><Input type="number" placeholder="175" value={medicalForm.height} onChange={(e) => setMedicalForm(prev => ({ ...prev, height: e.target.value }))} /></div>
-                            </div>
-                        </div>
-
-                        <hr className="border-border/50" />
-
-                        {/* ── SECCIÓN 2: CUESTIONARIO DE SALUD ── */}
-                        <div>
-                            <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">Cuestionario de Salud</h3>
-                            <div className="space-y-3">
-                                {([
-                                    { key: 'heartDisease' as const, label: '¿Diagnóstico de enfermedad cardíaca o presión alta?' },
-                                    { key: 'chestPainActivity' as const, label: '¿Dolor en pecho con actividad física?' },
-                                    { key: 'chestPainRest' as const, label: '¿Dolor en pecho en el último mes en reposo?' },
-                                    { key: 'dizziness' as const, label: '¿Pérdida de equilibrio, mareos o de conocimiento?' },
-                                    { key: 'boneIssues' as const, label: '¿Problemas óseos, articulares o de columna?' },
-                                    { key: 'asthma' as const, label: '¿Asma o dificultad respiratoria?' },
-                                    { key: 'surgery' as const, label: '¿Cirugía en los últimos 6 meses?' },
-                                    { key: 'heartMeds' as const, label: '¿Medicación para presión o corazón?' },
-                                    { key: 'pregnancy' as const, label: '¿Embarazo o parto en los últimos 3-6 meses?' },
-                                    { key: 'diabetes' as const, label: '¿Diabetes tipo 1 o 2?' },
-                                ] as const).map(({ key, label }) => (
-                                    <div key={key} className="flex items-center justify-between gap-3 py-2 px-3 rounded-xl bg-muted/40">
-                                        <span className="text-xs text-foreground leading-snug flex-1">{label}</span>
-                                        <Switch checked={medicalForm[key]} onCheckedChange={(checked) => setMedicalForm(prev => ({ ...prev, [key]: checked }))} />
-                                    </div>
-                                ))}
                             </div>
                         </div>
 
@@ -448,7 +608,7 @@ export function ProfileTab({ currentUser, updateUser, toggleTheme, theme, logout
             </Dialog>
 
             <Dialog open={showProgressDialog} onOpenChange={setShowProgressDialog}>
-                <DialogContent className="max-w-[92vw] rounded-3xl p-6">
+                <DialogContent className="max-w-[92vw] rounded-3xl p-6" aria-describedby={undefined}>
                     <DialogHeader><DialogTitle className="flex items-center gap-2"><Sparkles className="text-violet-500" /> Mi Evolución con IA</DialogTitle></DialogHeader>
                     <div className="space-y-4 py-4">
                         <div className="grid grid-cols-2 gap-4">
@@ -465,7 +625,7 @@ export function ProfileTab({ currentUser, updateUser, toggleTheme, theme, logout
 
             {/* Leagues Dialog */}
             <Dialog open={showLeaguesDialog} onOpenChange={setShowLeaguesDialog}>
-                <DialogContent className="max-w-[92vw] rounded-3xl p-6 max-h-[85vh] overflow-y-auto">
+                <DialogContent className="max-w-[92vw] rounded-3xl p-6 max-h-[85vh] overflow-y-auto" aria-describedby={undefined}>
                     <DialogHeader>
                         <DialogTitle className="flex items-center gap-2">
                             <Trophy className="w-5 h-5 text-yellow-500" /> Camino a la Gloria
@@ -549,7 +709,7 @@ export function ProfileTab({ currentUser, updateUser, toggleTheme, theme, logout
                                                                         )}
                                                                     </div>
                                                                     <span className={`text-xs tabular-nums ${completed ? 'text-emerald-500' : 'text-muted-foreground'}`}>
-                                                                        {completed ? `${league.ptsPerDivision}/${league.ptsPerDivision}` : `0/${league.ptsPerDivision}`} pts
+                                                                        {completed ? `${league.ptsPerDivision}/${league.ptsPerDivision}` : isCurrent ? `${currentUser?.ranked?.currentPoints || 0}/${league.ptsPerDivision}` : `0/${league.ptsPerDivision}`} pts
                                                                     </span>
                                                                 </div>
                                                             );
@@ -577,10 +737,184 @@ export function ProfileTab({ currentUser, updateUser, toggleTheme, theme, logout
                 </DialogContent>
             </Dialog>
 
+            {/* Ranking Leaderboard Dialog */}
+            <Dialog open={isLeaderboardOpen} onOpenChange={setIsLeaderboardOpen}>
+                <DialogContent className="max-w-[92vw] rounded-3xl p-0 max-h-[85vh] flex flex-col overflow-hidden" aria-describedby={undefined}>
+                    {/* ── HEADER NARANJA ── */}
+                    <div className="bg-gradient-to-r from-orange-500 to-amber-500 px-6 py-4 flex items-center justify-center">
+                        <DialogHeader className="text-center">
+                            <DialogTitle className="text-white font-black text-lg tracking-wide">Global</DialogTitle>
+                        </DialogHeader>
+                    </div>
+
+                    {(() => {
+                        const myRankIndex = leaderboard.findIndex(u => u.id === currentUser?.id);
+                        const myRank = myRankIndex + 1;
+                        const showPodium = leaderboard.length >= 1;
+                        const top3 = leaderboard.slice(0, 3);
+                        const listUsers = leaderboard.slice(Math.min(3, leaderboard.length), 100);
+                        const listStartRank = Math.min(3, leaderboard.length) + 1;
+                        const myInTop100 = myRank >= 1 && myRank <= 100;
+
+                        return (
+                            <div className="flex-1 overflow-y-auto min-h-0 relative">
+                                {/* ── PODIO VISUAL ESCALONADO ── */}
+                                {showPodium && (
+                                    <div className="flex justify-center items-end gap-3 mb-6 h-48 mt-4 pt-10 px-4 overflow-visible">
+                                        {/* 2° Puesto (Izquierda - Plata) */}
+                                        <div className="flex flex-col items-center">
+                                            {top3[1] ? (() => {
+                                                const isMe2 = top3[1].id === currentUser?.id;
+                                                return (
+                                                    <>
+                                                        <img
+                                                            src={top3[1].avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(top3[1].name)}&size=64&background=C0C0C0&color=fff`}
+                                                            alt={top3[1].name}
+                                                            className={`w-[50px] h-[50px] rounded-full object-cover border-[3px] shadow-md ${isMe2 ? 'border-orange-400' : 'border-gray-300'}`}
+                                                        />
+                                                        <p className={`text-[10px] font-bold mt-1 truncate max-w-[68px] text-center ${isMe2 ? 'text-orange-600 dark:text-orange-400' : 'text-foreground'}`}>{top3[1].name}{isMe2 ? ' (TÚ)' : ''}</p>
+                                                        <p className="text-[9px] text-muted-foreground">{top3[1].points} pts</p>
+                                                    </>
+                                                );
+                                            })() : (
+                                                <div className="w-[50px] h-[50px] rounded-full border-[3px] border-dashed border-gray-300/50 flex items-center justify-center mb-[calc(0.25rem+1rem)]">
+                                                    <span className="text-gray-300 text-sm">?</span>
+                                                </div>
+                                            )}
+                                            <div className={`w-[72px] h-[72px] rounded-t-xl flex items-center justify-center mt-1 shadow-inner ${top3[1] && top3[1].id === currentUser?.id ? 'bg-orange-100/70 border-2 border-orange-400/50' : 'bg-slate-100/50 border border-gray-300/30'}`}>
+                                                <span className="text-2xl font-black text-gray-400 drop-shadow">2</span>
+                                            </div>
+                                        </div>
+
+                                        {/* 1° Puesto (Centro - Oro - MÁS ALTO) */}
+                                        <div className="flex flex-col items-center -mt-4">
+                                            <span className="text-2xl mb-0.5">👑</span>
+                                            {(() => {
+                                                const isMe1 = top3[0].id === currentUser?.id;
+                                                return (
+                                                    <>
+                                                        <div className="relative">
+                                                            <div className="absolute -inset-1 rounded-full bg-gradient-to-b from-yellow-300 to-yellow-600 blur-md opacity-60 animate-pulse" />
+                                                            <img
+                                                                src={top3[0].avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(top3[0].name)}&size=80&background=FFD700&color=fff`}
+                                                                alt={top3[0].name}
+                                                                className={`w-[60px] h-[60px] rounded-full object-cover border-[3px] shadow-xl relative z-10 ${isMe1 ? 'border-orange-400' : 'border-yellow-400'}`}
+                                                            />
+                                                        </div>
+                                                        <p className={`text-[11px] font-black mt-1 truncate max-w-[80px] text-center ${isMe1 ? 'text-orange-600 dark:text-orange-400' : 'text-foreground'}`}>{top3[0].name}{isMe1 ? ' (TÚ)' : ''}</p>
+                                                        <p className="text-[9px] text-yellow-600 dark:text-yellow-400 font-bold">{top3[0].points} pts</p>
+                                                        <div className={`w-[84px] h-[96px] rounded-t-xl flex items-center justify-center mt-1 shadow-lg ${isMe1 ? 'bg-orange-100/60 border-2 border-orange-400/50' : 'bg-yellow-100/50 border border-yellow-400/30'}`}>
+                                                            <span className="text-3xl font-black text-yellow-500 drop-shadow-lg">1</span>
+                                                        </div>
+                                                    </>
+                                                );
+                                            })()}
+                                        </div>
+
+                                        {/* 3° Puesto (Derecha - Bronce) */}
+                                        <div className="flex flex-col items-center">
+                                            {top3[2] ? (() => {
+                                                const isMe3 = top3[2].id === currentUser?.id;
+                                                return (
+                                                    <>
+                                                        <img
+                                                            src={top3[2].avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(top3[2].name)}&size=64&background=CD7F32&color=fff`}
+                                                            alt={top3[2].name}
+                                                            className={`w-[46px] h-[46px] rounded-full object-cover border-[3px] shadow-md ${isMe3 ? 'border-orange-400' : 'border-orange-300'}`}
+                                                        />
+                                                        <p className={`text-[10px] font-bold mt-1 truncate max-w-[68px] text-center ${isMe3 ? 'text-orange-600 dark:text-orange-400' : 'text-foreground'}`}>{top3[2].name}{isMe3 ? ' (TÚ)' : ''}</p>
+                                                        <p className="text-[9px] text-muted-foreground">{top3[2].points} pts</p>
+                                                    </>
+                                                );
+                                            })() : (
+                                                <div className="w-[46px] h-[46px] rounded-full border-[3px] border-dashed border-orange-300/50 flex items-center justify-center mb-[calc(0.25rem+1rem)]">
+                                                    <span className="text-orange-300 text-sm">?</span>
+                                                </div>
+                                            )}
+                                            <div className={`w-[72px] h-[48px] rounded-t-xl flex items-center justify-center mt-1 shadow-inner ${top3[2] && top3[2].id === currentUser?.id ? 'bg-orange-100/70 border-2 border-orange-400/50' : 'bg-orange-50/50 border border-orange-300/30'}`}>
+                                                <span className="text-2xl font-black text-orange-400 drop-shadow">3</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* ── LISTA SEGMENTADA ── */}
+                                <div className="px-3 pb-3">
+                                    {listUsers.map((user: any, index: number) => {
+                                        const realRank = index + listStartRank;
+                                        const isMe = user.id === currentUser?.id;
+                                        // Segmento de color: 4-10 gris azulado, 11+ blanco
+                                        const segmentBg = realRank <= 10
+                                            ? 'bg-slate-50 dark:bg-slate-900/40'
+                                            : 'bg-white dark:bg-card';
+
+                                        return (
+                                            <div
+                                                key={user.id}
+                                                className={`flex items-center gap-3 p-3 rounded-xl text-sm mb-1 transition-colors ${isMe
+                                                    ? 'bg-orange-50 dark:bg-orange-950/30 border-2 border-orange-500 shadow-[0_0_12px_rgba(251,146,60,0.2)]'
+                                                    : `${segmentBg} hover:bg-muted/50`
+                                                    }`}
+                                            >
+                                                <span className={`w-7 text-center font-black tabular-nums text-xs ${isMe ? 'text-orange-500' : 'text-muted-foreground'}`}>
+                                                    {realRank}
+                                                </span>
+                                                <img
+                                                    src={user.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name)}&size=32`}
+                                                    alt={user.name}
+                                                    className={`w-9 h-9 rounded-full object-cover flex-shrink-0 ${isMe ? 'border-2 border-orange-400 shadow-sm' : ''}`}
+                                                />
+                                                <div className="flex-1 min-w-0">
+                                                    <p className={`font-semibold truncate text-sm ${isMe ? 'text-orange-600 dark:text-orange-400' : 'text-foreground'}`}>
+                                                        {user.name}{isMe ? ' (Tú)' : ''}
+                                                    </p>
+                                                    <p className="text-[10px] text-muted-foreground">
+                                                        {getLeagueIconText(user.league)} {user.league} {user.division}
+                                                    </p>
+                                                </div>
+                                                <span className={`text-xs font-bold tabular-nums flex-shrink-0 ${isMe ? 'text-orange-500' : 'text-muted-foreground'}`}>
+                                                    {user.points} pts
+                                                </span>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+
+                                {/* ── PUESTO FIJADO (fuera del Top 100) ── */}
+                                {myRank > 100 && (() => {
+                                    const me = leaderboard[myRankIndex];
+                                    if (!me) return null;
+                                    return (
+                                        <div className="sticky bottom-0 z-10 bg-background/95 backdrop-blur-sm border-t border-border px-3 pb-3 pt-2">
+                                            <div className="text-center py-1">
+                                                <span className="text-muted-foreground text-[10px] tracking-widest">· · ·</span>
+                                            </div>
+                                            <div className="bg-orange-50 dark:bg-orange-950/30 border-2 border-orange-500 rounded-xl p-3 flex items-center gap-3 shadow-[0_-4px_16px_rgba(251,146,60,0.15)]">
+                                                <span className="w-7 text-center font-black text-orange-500 tabular-nums text-sm">#{myRank}</span>
+                                                <img
+                                                    src={me.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(me.name)}&size=32`}
+                                                    alt={me.name}
+                                                    className="w-10 h-10 rounded-full object-cover border-2 border-orange-400 flex-shrink-0 shadow-sm"
+                                                />
+                                                <div className="flex-1 min-w-0">
+                                                    <p className="font-bold text-orange-600 dark:text-orange-400 truncate text-sm">{me.name}</p>
+                                                    <p className="text-[9px] text-orange-500/80 font-bold uppercase tracking-widest">TU PUESTO ACTUAL</p>
+                                                </div>
+                                                <span className="text-sm font-black text-orange-500 tabular-nums flex-shrink-0">{me.points} pts</span>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+                            </div>
+                        );
+                    })()}
+                </DialogContent>
+            </Dialog>
+
             {/* Day Detail Dialog */}
             <Dialog open={showDayDetailDialog} onOpenChange={setShowDayDetailDialog}>
-                <DialogContent className="max-w-[92vw] sm:max-w-md rounded-3xl p-6">
-                    {selectedDayData?.status === 'training' && selectedDayData.routine ? (
+                <DialogContent className="max-w-[92vw] sm:max-w-md rounded-3xl p-6" aria-describedby={undefined}>
+                    {selectedDayData?.status === 'workout' ? (
                         /* ── ESTADO B: DÍA DE ENTRENAMIENTO ── */
                         <>
                             <DialogHeader>
@@ -598,32 +932,70 @@ export function ProfileTab({ currentUser, updateUser, toggleTheme, theme, logout
                                     </div>
                                 </DialogTitle>
                             </DialogHeader>
-                            <div className="space-y-4 py-2">
-                                {/* Tarjeta de resumen de rutina */}
-                                <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4">
-                                    <h3 className="font-bold text-foreground text-lg">{selectedDayData.routine.name}</h3>
-                                    <div className="flex items-center justify-between mt-2">
-                                        <span className="text-sm font-medium text-emerald-600">
-                                            {selectedDayData.routine.exercises?.length || 0} ejercicios
-                                        </span>
-                                        <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                                            <Clock className="w-4 h-4" />
-                                            <span>{selectedDayData.routine.duration} min</span>
+                            <div className="py-2 max-h-[70vh] overflow-y-auto pr-2">
+                                {isLoadingDayDetail ? (
+                                    <div className="flex justify-center items-center py-8">
+                                        <Loader2 className="w-6 h-6 animate-spin text-emerald-500" />
+                                    </div>
+                                ) : selectedRoutineData ? (
+                                    <div className="space-y-4">
+                                        {/* Tarjeta de resumen de rutina */}
+                                        <div className="bg-green-100/50 dark:bg-emerald-900/20 border border-emerald-500/20 rounded-xl p-4">
+                                            <h3 className="font-bold text-emerald-950 dark:text-emerald-50 text-lg">{selectedRoutineData.name}</h3>
+                                            <div className="flex items-center justify-between mt-2">
+                                                <span className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+                                                    {selectedRoutineData.routine_exercises?.length || 0} ejercicios
+                                                </span>
+                                                <div className="flex items-center gap-1.5 text-sm font-medium text-emerald-700 dark:text-emerald-300">
+                                                    <Clock className="w-4 h-4" />
+                                                    <span>{selectedRoutineData.duration_minutes || 0} min</span>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Lista de ejercicios — nuevo diseño */}
+                                        <div className="space-y-3">
+                                            {selectedRoutineData.routine_exercises?.sort((a: any, b: any) => a.order_index - b.order_index).map((re: any, i: number) => {
+                                                const exerciseId = re.exercises?.id;
+                                                const exerciseLogs = selectedExerciseLogs.filter(l => l.exercise_id === exerciseId);
+
+                                                return (
+                                                    <div key={i} className="flex rounded-xl border border-border overflow-hidden bg-card">
+                                                        {/* Columna izquierda — Número */}
+                                                        <div className="w-12 flex items-center justify-center border-r border-border bg-muted/20 flex-shrink-0">
+                                                            <span className="text-base font-black text-emerald-600 dark:text-emerald-400">
+                                                                {i + 1}
+                                                            </span>
+                                                        </div>
+
+                                                        {/* Columna derecha — Contenido */}
+                                                        <div className="flex-1 flex flex-col p-3">
+                                                            <p className="text-sm font-bold text-foreground text-center mb-2">
+                                                                {re.exercises?.name || 'Ejercicio'}
+                                                            </p>
+
+                                                            {exerciseLogs.length > 0 ? (
+                                                                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                                                                    {exerciseLogs.map((log: any, si: number) => (
+                                                                        <p key={si} className="text-xs text-muted-foreground">
+                                                                            Serie {log.set_index ?? (si + 1)}: {log.reps ?? '?'} Rep - {log.weight ?? '0'}kg
+                                                                        </p>
+                                                                    ))}
+                                                                </div>
+                                                            ) : (
+                                                                <p className="text-xs text-muted-foreground text-center">
+                                                                    Sin registros de series para este ejercicio
+                                                                </p>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
                                         </div>
                                     </div>
-                                </div>
-
-                                {/* Lista de ejercicios */}
-                                <div className="space-y-2">
-                                    {selectedDayData.routine.exercises?.map((ex: string, i: number) => (
-                                        <div key={i} className="flex items-center gap-3 bg-muted/40 rounded-xl px-3 py-2.5">
-                                            <span className="w-6 h-6 rounded-full bg-emerald-200 dark:bg-emerald-800 text-emerald-800 dark:text-emerald-200 flex items-center justify-center text-xs font-bold flex-shrink-0">
-                                                {i + 1}
-                                            </span>
-                                            <span className="text-sm text-foreground font-medium">{ex}</span>
-                                        </div>
-                                    ))}
-                                </div>
+                                ) : (
+                                    <p className="text-sm text-center text-muted-foreground mt-4 mb-2">¡Completaste tu rutina este día! 💪</p>
+                                )}
                             </div>
                         </>
                     ) : (
@@ -646,6 +1018,113 @@ export function ProfileTab({ currentUser, updateUser, toggleTheme, theme, logout
 
                         </>
                     )}
+                </DialogContent>
+            </Dialog>
+            {/* ── RECORDS DIALOG ── */}
+            <Dialog open={showRecordsDialog} onOpenChange={setShowRecordsDialog}>
+                <DialogContent className="max-w-[95vw] sm:max-w-md rounded-3xl p-5 max-h-[90vh] overflow-y-auto" aria-describedby={undefined}>
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <Dumbbell className="w-5 h-5 text-violet-500" />
+                            Mis Récords Personales
+                        </DialogTitle>
+                    </DialogHeader>
+
+                    {/* ── BAR CHART ── */}
+                    <div className="mt-4 mb-6">
+                        <div className="flex items-end gap-2" style={{ height: 200 }}>
+                            {/* Y-Axis labels */}
+                            <div className="flex flex-col justify-between h-full text-[9px] text-muted-foreground tabular-nums pr-1" style={{ minWidth: 28 }}>
+                                {[150, 120, 90, 60, 30, 0].map(v => (
+                                    <span key={v}>{v}</span>
+                                ))}
+                            </div>
+                            {/* Bars */}
+                            <div className="flex-1 flex items-end justify-around gap-1.5 h-full border-l border-b border-border/50 pl-1 pb-0.5">
+                                {selectedSlots.map((slot, i) => {
+                                    const pr = slot?.pr || 0;
+                                    const heightPct = Math.min((pr / 150) * 100, 100);
+                                    return (
+                                        <div key={i} className="flex flex-col items-center flex-1" style={{ height: '100%', justifyContent: 'flex-end' }}>
+                                            <span className="text-[10px] font-bold text-foreground mb-1 tabular-nums">{pr > 0 ? `${pr}` : '-'}</span>
+                                            <div
+                                                className="w-full max-w-[40px] rounded-t-lg transition-all duration-500"
+                                                style={{
+                                                    height: pr > 0 ? `${heightPct}%` : '3px',
+                                                    background: pr > 0
+                                                        ? `linear-gradient(to top, hsl(${260 + i * 15}, 70%, 55%), hsl(${260 + i * 15}, 70%, 70%))`
+                                                        : 'hsl(var(--muted))'
+                                                }}
+                                            />
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                        <p className="text-[9px] text-muted-foreground text-center mt-1">Peso máximo (kg)</p>
+                    </div>
+
+                    {/* ── SLOTS ── */}
+                    <div>
+                        <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-3">Ejercicios seleccionados</p>
+                        <div className="flex justify-between gap-2">
+                            {selectedSlots.map((slot, i) => (
+                                <button
+                                    key={i}
+                                    onClick={() => openExerciseSelector(i)}
+                                    className={`flex-1 aspect-square rounded-2xl border-2 flex flex-col items-center justify-center gap-1 transition-all active:scale-95 ${slot
+                                        ? 'border-violet-500/30 bg-violet-500/5'
+                                        : 'border-dashed border-muted-foreground/30 bg-muted/30 hover:border-violet-500/30'
+                                        }`}
+                                >
+                                    {slot ? (
+                                        <>
+                                            <span className="text-[10px] font-bold text-foreground leading-tight text-center px-1 line-clamp-2">
+                                                {slot.name.length > 10 ? slot.name.substring(0, 10) + '…' : slot.name}
+                                            </span>
+                                            <span className="text-[9px] text-violet-500 font-bold">{slot.pr} kg</span>
+                                        </>
+                                    ) : (
+                                        <span className="text-lg text-muted-foreground/50">+</span>
+                                    )}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
+
+            {/* ── EXERCISE SELECTOR DIALOG ── */}
+            <Dialog open={isExerciseSelectorOpen} onOpenChange={setIsExerciseSelectorOpen}>
+                <DialogContent className="max-w-[92vw] sm:max-w-sm rounded-3xl p-5 max-h-[80vh] flex flex-col" aria-describedby={undefined}>
+                    <DialogHeader>
+                        <DialogTitle>Elegir ejercicio</DialogTitle>
+                    </DialogHeader>
+                    <Input
+                        placeholder="Buscar ejercicio..."
+                        value={exerciseSearchQuery}
+                        onChange={(e) => setExerciseSearchQuery(e.target.value)}
+                        className="rounded-xl mt-2"
+                    />
+                    <div className="flex-1 overflow-y-auto mt-3 space-y-1 max-h-[50vh]">
+                        {availableExercises
+                            .filter(ex => ex.name.toLowerCase().includes(exerciseSearchQuery.toLowerCase()))
+                            .map((ex: any) => (
+                                <button
+                                    key={ex.id}
+                                    onClick={() => {
+                                        fetchPRForExercise(ex.id, ex.name, activeSlotIndex);
+                                        setIsExerciseSelectorOpen(false);
+                                    }}
+                                    className="w-full text-left p-3 rounded-xl hover:bg-muted/60 transition-colors text-sm font-medium"
+                                >
+                                    {ex.name}
+                                </button>
+                            ))}
+                        {availableExercises.filter(ex => ex.name.toLowerCase().includes(exerciseSearchQuery.toLowerCase())).length === 0 && (
+                            <p className="text-sm text-muted-foreground text-center py-6">No se encontraron ejercicios</p>
+                        )}
+                    </div>
                 </DialogContent>
             </Dialog>
         </div>
