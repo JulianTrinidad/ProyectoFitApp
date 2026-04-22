@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-    ChevronRight, ChevronLeft, Camera, Plus, Trash2, Sparkles, Droplets, Scale, Ruler
+    ChevronRight, ChevronLeft, Camera, Plus, Trash2, Sparkles, Droplets, Scale, Ruler, Loader2, Check, X, ImageIcon
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/lib/supabase';
+import { analyzeFood, type GeminiNutritionResult } from '@/lib/gemini';
 import { format, isToday, subDays, addDays } from 'date-fns';
 import { es } from 'date-fns/locale';
 import type { NutritionTab as NutritionTabType } from './mobileTypes';
@@ -64,9 +65,18 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
     const [nutritionDate, setNutritionDate] = useState(new Date());
     const [datePickerOpen, setDatePickerOpen] = useState(false);
 
-    // ─── SCANNER ─────────────────────────────────────────────────────
+    // ─── SCANNER / GEMINI ────────────────────────────────────────────
     const [isScanning, setIsScanning] = useState(false);
-    const [scanResult, setScanResult] = useState<{ name: string; portion: string; calories: number } | null>(null);
+    const [scanResult, setScanResult] = useState<GeminiNutritionResult | null>(null);
+    const [scanPreview, setScanPreview] = useState<string | null>(null);
+    const [scanError, setScanError] = useState<string | null>(null);
+    const [isSavingScan, setIsSavingScan] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const modalFileInputRef = useRef<HTMLInputElement>(null);
+    // Estado para confirmación de comida detectada en modal
+    const [modalScanPending, setModalScanPending] = useState<GeminiNutritionResult | null>(null);
+    const [modalScanPreview, setModalScanPreview] = useState<string | null>(null);
+    const [modalScanError, setModalScanError] = useState<string | null>(null);
 
     // ─── SUPABASE LOGS ───────────────────────────────────────────────
     const [logs, setLogs] = useState<NutritionLog[]>([]);
@@ -153,14 +163,122 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
         }
     };
 
-    // ─── SCANNER (SIN TOCAR) ─────────────────────────────────────────
+    // ─── SCANNER: CAPTURA + GEMINI ─────────────────────────────────────
     const handleScan = () => {
+        fileInputRef.current?.click();
+    };
+
+    const handleModalScan = () => {
+        modalFileInputRef.current?.click();
+    };
+
+    const processImage = async (file: File, isFromModal: boolean = false) => {
         setIsScanning(true);
         setScanResult(null);
-        setTimeout(() => {
+        setScanError(null);
+        if (isFromModal) {
+            setModalScanPending(null);
+            setModalScanError(null);
+        }
+
+        // Crear preview
+        const previewUrl = URL.createObjectURL(file);
+        if (isFromModal) {
+            setModalScanPreview(previewUrl);
+        } else {
+            setScanPreview(previewUrl);
+        }
+
+        try {
+            // Convertir a base64
+            const base64 = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    const result = reader.result as string;
+                    const base64Data = result.split(',')[1];
+                    resolve(base64Data);
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+
+            const mimeType = file.type || 'image/jpeg';
+            const result = await analyzeFood(base64, mimeType);
+
+            if (isFromModal) {
+                // Paso 1: Mostrar confirmación "Tu comida es:"
+                setModalScanPending(result);
+            } else {
+                setScanResult(result);
+            }
+        } catch (error: any) {
+            console.error('Error analyzing food:', error);
+            if (isFromModal) {
+                setModalScanError(error.message || 'Error al analizar la imagen');
+            } else {
+                setScanError(error.message || 'Error al analizar la imagen');
+            }
+        } finally {
             setIsScanning(false);
-            setScanResult({ name: 'Alimento Detectado', portion: '1 porción', calories: 250 });
-        }, 2000);
+        }
+    };
+
+    /** Paso 2: El usuario confirma la comida detectada → autocompleta campos */
+    const handleConfirmModalScan = () => {
+        if (!modalScanPending) return;
+        const result = modalScanPending;
+        setModalItems(result.items.map(item => ({
+            name: item.name,
+            quantity: item.quantity,
+            calories: item.calories,
+            protein: item.protein,
+            carbs: item.carbs,
+            fats: item.fats,
+        })));
+        if (!addToExistingLogId && result.mealName) {
+            setModalMealName(result.mealName);
+        }
+        toast({ title: '✨ Datos completados', description: `Se cargaron ${result.items.length} alimento(s)` });
+        // Limpiar estados del scan (NO se guarda la foto)
+        setModalScanPending(null);
+        setModalScanPreview(null);
+    };
+
+    const handleCancelModalScan = () => {
+        setModalScanPending(null);
+        setModalScanPreview(null);
+        setModalScanError(null);
+    };
+
+    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, isFromModal: boolean = false) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            processImage(file, isFromModal);
+        }
+        e.target.value = '';
+    };
+
+    const handleSaveScanResult = async () => {
+        if (!scanResult || scanResult.items.length === 0) return;
+        setIsSavingScan(true);
+        try {
+            await insertLog(scanResult.mealName, scanResult.items);
+            // Limpiar scanner
+            setScanResult(null);
+            setScanPreview(null);
+            setScanError(null);
+            setNutritionTab('diet');
+        } catch (error) {
+            console.error('Error saving scan result:', error);
+        } finally {
+            setIsSavingScan(false);
+        }
+    };
+
+    const handleDiscardScan = () => {
+        setScanResult(null);
+        setScanPreview(null);
+        setScanError(null);
     };
 
     // ─── SUPABASE: FETCH LOGS ────────────────────────────────────────
@@ -272,6 +390,9 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
         setAddToExistingLogId(null);
         setModalMealName('');
         setModalItems([{ name: '', quantity: '', calories: 0, protein: 0, carbs: 0, fats: 0 }]);
+        setModalScanPending(null);
+        setModalScanPreview(null);
+        setModalScanError(null);
         setModalOpen(true);
     };
 
@@ -590,33 +711,122 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
             ) : (
                 /* ── TAB: ESCÁNER IA ─────────────────────────────────────── */
                 <div className="space-y-4">
+                    {/* Input oculto para captura de imagen */}
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        className="hidden"
+                        onChange={(e) => handleFileChange(e, false)}
+                    />
+
+                    {/* Área de preview / estado */}
                     <div className="aspect-square bg-muted rounded-3xl border-2 border-dashed border-border flex flex-col items-center justify-center relative overflow-hidden">
                         {isScanning ? (
-                            <div className="text-center animate-pulse">
-                                <div className="w-16 h-16 rounded-full border-4 border-primary border-t-transparent animate-spin mx-auto mb-4" />
-                                <p className="text-muted-foreground">Analizando...</p>
+                            <div className="text-center">
+                                {scanPreview && (
+                                    <img src={scanPreview} alt="Preview" className="absolute inset-0 w-full h-full object-cover opacity-30" />
+                                )}
+                                <div className="relative z-10 flex flex-col items-center">
+                                    <div className="w-16 h-16 rounded-full border-4 border-primary border-t-transparent animate-spin mx-auto mb-4" />
+                                    <p className="text-foreground font-medium">Analizando con IA...</p>
+                                    <p className="text-muted-foreground text-xs mt-1">Identificando alimentos y macros</p>
+                                </div>
+                            </div>
+                        ) : scanError ? (
+                            <div className="text-center p-6">
+                                <div className="text-5xl mb-4">⚠️</div>
+                                <h3 className="font-bold text-foreground text-lg mb-1">Error al analizar</h3>
+                                <p className="text-muted-foreground text-sm px-4">{scanError}</p>
+                                <Button variant="secondary" size="sm" className="mt-4" onClick={handleDiscardScan}>
+                                    Intentar de nuevo
+                                </Button>
                             </div>
                         ) : scanResult ? (
-                            <div className="text-center p-6">
-                                <div className="text-5xl mb-4">✅</div>
-                                <h3 className="font-bold text-foreground text-lg mb-1">{scanResult.name}</h3>
-                                <p className="text-muted-foreground text-sm">{scanResult.portion}</p>
-                                <p className="text-orange-500 font-semibold text-lg mt-2">{scanResult.calories} kcal</p>
+                            <div className="absolute inset-0 flex flex-col">
+                                {/* Imagen de fondo */}
+                                {scanPreview && (
+                                    <img src={scanPreview} alt="Comida" className="absolute inset-0 w-full h-full object-cover opacity-20" />
+                                )}
+                                {/* Resultados */}
+                                <div className="relative z-10 flex-1 overflow-y-auto p-5">
+                                    <div className="flex items-center gap-2 mb-4">
+                                        <div className="w-8 h-8 rounded-full bg-green-500/20 flex items-center justify-center">
+                                            <Check className="w-4 h-4 text-green-500" />
+                                        </div>
+                                        <div>
+                                            <h3 className="font-bold text-foreground text-base">{scanResult.mealName}</h3>
+                                            <p className="text-xs text-muted-foreground">{scanResult.items.length} alimento(s) detectado(s)</p>
+                                        </div>
+                                    </div>
+
+                                    {/* Items detectados */}
+                                    <div className="space-y-2">
+                                        {scanResult.items.map((item, idx) => (
+                                            <div key={idx} className="bg-card/80 backdrop-blur-sm rounded-xl p-3 border border-border/50">
+                                                <div className="flex items-center justify-between mb-1">
+                                                    <span className="text-sm font-semibold text-foreground">{item.name}</span>
+                                                    <span className="text-sm font-bold text-orange-500">{item.calories} kcal</span>
+                                                </div>
+                                                <p className="text-xs text-muted-foreground mb-1.5">{item.quantity}</p>
+                                                <div className="flex items-center gap-3 text-[11px]">
+                                                    <span className="text-blue-500 font-semibold">P: {item.protein}g</span>
+                                                    <span className="text-yellow-500 font-semibold">C: {item.carbs}g</span>
+                                                    <span className="text-rose-500 font-semibold">G: {item.fats}g</span>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    {/* Total */}
+                                    <div className="mt-3 bg-gradient-to-r from-orange-50 to-amber-50 dark:from-orange-950/30 dark:to-amber-950/30 rounded-xl px-4 py-2.5 border border-orange-200/50 dark:border-orange-800/30">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-sm font-semibold text-foreground">Total</span>
+                                            <span className="text-lg font-bold text-orange-500">{scanResult.totalCalories} kcal</span>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         ) : (
                             <>
-                                <Camera className="w-12 h-12 text-muted-foreground mb-4" />
+                                <div className="w-20 h-20 rounded-3xl bg-primary/10 flex items-center justify-center mb-4">
+                                    <Camera className="w-10 h-10 text-primary" />
+                                </div>
+                                <p className="text-foreground font-semibold text-base mb-1">Escanea tu plato</p>
                                 <p className="text-muted-foreground text-center px-8 text-sm">
-                                    Usa la cámara para analizar calorías con IA
+                                    Toma una foto y la IA analizará las calorías y macros automáticamente
                                 </p>
                             </>
                         )}
                     </div>
 
-                    <Button variant="gradient" size="xl" className="w-full" onClick={handleScan} disabled={isScanning}>
-                        <Camera className="w-5 h-5" />
-                        {isScanning ? 'Procesando...' : 'Escanear Plato'}
-                    </Button>
+                    {/* Botones de acción */}
+                    {scanResult ? (
+                        <div className="flex gap-3">
+                            <Button variant="secondary" size="xl" className="flex-1" onClick={handleDiscardScan}>
+                                <X className="w-5 h-5" />
+                                Descartar
+                            </Button>
+                            <Button variant="gradient" size="xl" className="flex-1" onClick={handleSaveScanResult} disabled={isSavingScan}>
+                                {isSavingScan ? (
+                                    <Loader2 className="w-5 h-5 animate-spin" />
+                                ) : (
+                                    <Check className="w-5 h-5" />
+                                )}
+                                {isSavingScan ? 'Guardando...' : 'Guardar'}
+                            </Button>
+                        </div>
+                    ) : (
+                        <Button variant="gradient" size="xl" className="w-full" onClick={handleScan} disabled={isScanning}>
+                            {isScanning ? (
+                                <Loader2 className="w-5 h-5 animate-spin" />
+                            ) : (
+                                <Camera className="w-5 h-5" />
+                            )}
+                            {isScanning ? 'Analizando...' : 'Escanear Plato'}
+                        </Button>
+                    )}
                 </div>
             )}
 
@@ -729,14 +939,84 @@ export function NutritionTab({ currentUser, updateUser, initialTab = 'diet', wat
                             <span className="text-lg font-bold text-orange-500">{modalTotalCalories} kcal</span>
                         </div>
 
-                        {/* Botón placeholder – Escanear con IA */}
-                        <button
-                            className="w-full py-3 rounded-xl border-2 border-dashed border-primary/30 text-sm font-medium text-primary/70 hover:border-primary/50 hover:text-primary transition-colors flex items-center justify-center gap-2"
-                            onClick={() => toast({ title: 'Próximamente', description: 'El escaneo con IA estará disponible pronto.' })}
-                        >
-                            <Sparkles className="w-4 h-4" />
-                            Escanear plato con IA
-                        </button>
+                        {/* Escanear plato con IA desde el modal */}
+                        <input
+                            ref={modalFileInputRef}
+                            type="file"
+                            accept="image/*"
+                            capture="environment"
+                            className="hidden"
+                            onChange={(e) => handleFileChange(e, true)}
+                        />
+
+                        {/* Estado: Escaneando... */}
+                        {isScanning && modalScanPreview && (
+                            <div className="rounded-2xl border border-border overflow-hidden bg-card">
+                                <div className="relative h-40">
+                                    <img src={modalScanPreview} alt="Analizando" className="w-full h-full object-cover opacity-40" />
+                                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/60 backdrop-blur-sm">
+                                        <Loader2 className="w-8 h-8 animate-spin text-primary mb-2" />
+                                        <p className="text-sm font-semibold text-foreground">Analizando tu plato...</p>
+                                        <p className="text-xs text-muted-foreground mt-0.5">Identificando alimentos y macros</p>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Estado: Error al escanear */}
+                        {modalScanError && (
+                            <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-4 text-center">
+                                <p className="text-sm font-semibold text-destructive mb-1">⚠️ Error al analizar</p>
+                                <p className="text-xs text-muted-foreground mb-3">{modalScanError}</p>
+                                <div className="flex gap-2 justify-center">
+                                    <Button variant="secondary" size="sm" onClick={handleCancelModalScan}>Cerrar</Button>
+                                    <Button variant="gradient" size="sm" onClick={handleModalScan}>Reintentar</Button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Estado: Confirmación "Tu comida es:" */}
+                        {modalScanPending && !isScanning && (
+                            <div className="rounded-2xl border-2 border-primary/40 bg-primary/5 overflow-hidden animate-fade-in">
+                                {modalScanPreview && (
+                                    <div className="relative h-36">
+                                        <img src={modalScanPreview} alt="Comida detectada" className="w-full h-full object-cover" />
+                                        <div className="absolute inset-0 bg-gradient-to-t from-background via-background/50 to-transparent" />
+                                    </div>
+                                )}
+                                <div className="p-4 -mt-6 relative z-10">
+                                    <p className="text-xs font-semibold text-primary uppercase tracking-wider mb-1">Tu comida es:</p>
+                                    <h3 className="text-lg font-black text-foreground leading-tight">
+                                        {modalScanPending.items.map(i => i.name).join(', ')}
+                                    </h3>
+                                    <div className="flex items-center gap-3 mt-2 text-xs">
+                                        <span className="font-bold text-orange-500">{modalScanPending.totalCalories} kcal</span>
+                                        <span className="text-blue-500 font-semibold">P: {modalScanPending.items.reduce((s, i) => s + i.protein, 0)}g</span>
+                                        <span className="text-yellow-500 font-semibold">C: {modalScanPending.items.reduce((s, i) => s + i.carbs, 0)}g</span>
+                                        <span className="text-rose-500 font-semibold">G: {modalScanPending.items.reduce((s, i) => s + i.fats, 0)}g</span>
+                                    </div>
+                                    <div className="flex gap-2 mt-3">
+                                        <Button variant="secondary" size="sm" className="flex-1 rounded-xl" onClick={handleCancelModalScan}>
+                                            <X className="w-3.5 h-3.5 mr-1" /> No es
+                                        </Button>
+                                        <Button variant="gradient" size="sm" className="flex-1 rounded-xl" onClick={handleConfirmModalScan}>
+                                            <Check className="w-3.5 h-3.5 mr-1" /> ¡Sí, es!
+                                        </Button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Botón principal para escanear (solo si no hay scan en progreso) */}
+                        {!modalScanPending && !isScanning && !modalScanError && (
+                            <button
+                                className="w-full py-3 rounded-xl border-2 border-dashed border-primary/30 text-sm font-medium text-primary/70 hover:border-primary/50 hover:text-primary transition-colors flex items-center justify-center gap-2"
+                                onClick={handleModalScan}
+                            >
+                                <Sparkles className="w-4 h-4" />
+                                Escanear plato con IA
+                            </button>
+                        )}
                     </div>
 
                     <DialogFooter className="flex gap-2 sm:gap-2">

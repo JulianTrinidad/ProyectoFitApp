@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import {
-    Dumbbell, Play, Timer, ChevronRight, ChevronLeft, ChevronDown, Moon, X, Trophy, CheckCircle2, CheckCircle, Loader2, Clock, Check, History
+    Dumbbell, Play, Timer, ChevronRight, ChevronLeft, ChevronDown, Moon, X, Trophy, CheckCircle2, CheckCircle, Loader2, Clock, Check, History, ArrowRight
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
@@ -28,6 +28,7 @@ interface SupabaseRoutineExercise {
         image_url: string;
         instructions: string[] | null;
         tips: string[] | null;
+        category: string | null;
     };
 }
 
@@ -43,6 +44,7 @@ interface AvailableRoutineExercise {
     reps: string;
     rest: number;
     executionSteps?: string[];
+    category?: string;
 }
 
 /**
@@ -196,7 +198,7 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
             try {
                 const { data, error } = await supabase
                     .from('routine_exercises')
-                    .select('*, exercises(id, name, image_url, instructions, tips)')
+                    .select('*, exercises(id, name, image_url, instructions, tips, category)')
                     .eq('routine_id', selectedRoutine.id)
                     .order('order_index', { ascending: true });
                 if (error) throw error;
@@ -219,9 +221,15 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
         reps: re.reps,
         rest: re.rest_seconds || 90,
         executionSteps: re.exercises.instructions || [],
+        category: re.exercises.category || '',
     }));
     const currentEx = activeExercises[currentExerciseIndex];
     const isLastExercise = currentExerciseIndex >= activeExercises.length - 1;
+
+    // Detectar si TODOS los ejercicios de la rutina son de movilidad
+    const isMobilityRoutine = activeExercises.length > 0 && activeExercises.every(ex =>
+        ex.category?.toUpperCase().includes('MOVILIDAD')
+    );
 
     // ── Recovery: restore mid-workout state from today's exercise_logs ──
     useEffect(() => {
@@ -614,7 +622,163 @@ export function WorkoutTab({ currentUser, updateUser, customRoutines, setHasTrai
         setTimeout(() => setIsRestModeActive(false), 3000);
     };
 
-    // ─── RENDERIZADO: INTERFAZ DE ENTRENAMIENTO EN CURSO ──────────────
+    /**
+     * Avanza al siguiente ejercicio de movilidad o finaliza la sesión.
+     */
+    const handleMobilityNext = async () => {
+        // Si es el último ejercicio, finalizar sesión
+        if (isLastExercise) {
+            const todayDate = new Date().toLocaleDateString('en-CA');
+            try {
+                await supabase.from('daily_logs').delete().match({ user_id: currentUser.id, date: todayDate });
+                const { error } = await supabase.from('daily_logs').insert({
+                    user_id: currentUser.id,
+                    date: todayDate,
+                    activity_type: 'workout',
+                    workout_id: selectedRoutine?.id
+                });
+                if (error) throw error;
+
+                setHasTrainedToday(true);
+                if (typeof setHasLoggedToday === 'function') setHasLoggedToday(true);
+
+                const newStreak = (currentUser?.streak || 0) + 1;
+                updateUser(currentUser.id, { streak: newStreak, lastActive: new Date() });
+                addRankedPoints(5, 'Movilidad completada 🧘');
+
+                if (newStreak % 3 === 0) {
+                    addRankedPoints(10, 'BONO RACHA 3 DÍAS 🔥');
+                }
+
+                try {
+                    await supabase.from('profiles').update({
+                        streak: newStreak,
+                        last_activity_date: new Date().toLocaleDateString('en-CA')
+                    }).eq('id', currentUser.id);
+                } catch (e) {
+                    console.error('Error updating streak:', e);
+                }
+
+                toast({ title: '¡Movilidad completada! 🎉', description: `+5 pts • Racha: ${newStreak} días` });
+                setIsWorkoutActive(false);
+            } catch (err: any) {
+                console.error('Error salvando log de movilidad:', err);
+                toast({ title: 'Error de conexión', description: err.message || 'No se pudo guardar el progreso.', variant: 'destructive' });
+            }
+            return;
+        }
+
+        // Avanzar al siguiente ejercicio
+        setCurrentExerciseIndex(i => i + 1);
+        setShowInstructions(false);
+    };
+
+    // ─── RENDERIZADO: INTERFAZ DE MOVILIDAD (sin peso/reps/series) ──────
+    if (isWorkoutActive && activeExercises.length > 0 && currentEx && isMobilityRoutine) {
+        return (
+            <div className="min-h-screen flex flex-col animate-fade-in bg-background">
+                {/* ── HERO IMAGE (más grande para movilidad) ── */}
+                <div className="relative h-72 flex-shrink-0">
+                    {currentEx.image ? (
+                        <img src={currentEx.image} className="w-full h-full object-cover" alt={currentEx.name} />
+                    ) : (
+                        <div className="w-full h-full bg-gradient-to-br from-teal-500/20 to-emerald-500/5 flex items-center justify-center">
+                            <Dumbbell className="w-16 h-16 text-teal-500/30" />
+                        </div>
+                    )}
+                    <div className="absolute inset-0 bg-gradient-to-t from-background via-background/40 to-transparent" />
+                    {/* Close button */}
+                    <button
+                        onClick={() => setIsWorkoutActive(false)}
+                        className="absolute top-4 left-4 w-10 h-10 rounded-full bg-black/30 backdrop-blur-md flex items-center justify-center border border-white/10 transition-colors hover:bg-black/50"
+                    >
+                        <X className="w-5 h-5 text-white" />
+                    </button>
+                    {/* Exercise counter */}
+                    <div className="absolute top-4 right-4 bg-black/30 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/10">
+                        <span className="text-xs font-bold text-white">{currentExerciseIndex + 1}/{activeExercises.length}</span>
+                    </div>
+                    {/* Mobility badge */}
+                    <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-teal-500/80 backdrop-blur-md px-3 py-1 rounded-full">
+                        <span className="text-[10px] font-bold text-white uppercase tracking-wider">🧘 Movilidad</span>
+                    </div>
+                    {/* Exercise name */}
+                    <div className="absolute bottom-4 left-4 right-4">
+                        <h2 className="text-2xl font-black text-white drop-shadow-lg leading-tight">{currentEx.name}</h2>
+                    </div>
+                </div>
+
+                {/* ── SCROLLABLE CONTENT: Solo instrucciones ── */}
+                <div className="flex-1 p-4 space-y-4 overflow-y-auto pb-28">
+
+                    {/* ── Instrucciones (siempre visibles en movilidad) ── */}
+                    {currentEx.executionSteps && currentEx.executionSteps.length > 0 && (
+                        <div className="bg-card rounded-3xl border border-border p-5 shadow-soft">
+                            <h4 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">Instrucciones</h4>
+                            <div className="space-y-3">
+                                {currentEx.executionSteps.map((step, i) => (
+                                    <div key={i} className="flex items-start gap-3">
+                                        <span className="w-7 h-7 rounded-full bg-teal-500/15 text-teal-600 flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">
+                                            {i + 1}
+                                        </span>
+                                        <p className="text-sm text-foreground/80 leading-relaxed">{step}</p>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ── Tips (si hay) ── */}
+                    {currentEx.tips && currentEx.tips.length > 0 && (
+                        <div className="bg-card rounded-3xl border border-border p-5 shadow-soft">
+                            <h4 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">Tips</h4>
+                            <div className="space-y-2">
+                                {currentEx.tips.map((tip, i) => (
+                                    <div key={i} className="flex items-start gap-3">
+                                        <CheckCircle className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" />
+                                        <p className="text-sm text-foreground/80 leading-relaxed">{tip}</p>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ── Progress indicator ── */}
+                    <div className="flex items-center justify-center gap-1.5 pt-2">
+                        {activeExercises.map((_, idx) => (
+                            <div
+                                key={idx}
+                                className={`h-1.5 rounded-full transition-all duration-300 ${idx < currentExerciseIndex
+                                    ? 'w-6 bg-teal-500'
+                                    : idx === currentExerciseIndex
+                                        ? 'w-8 bg-teal-500 animate-pulse'
+                                        : 'w-4 bg-muted-foreground/20'
+                                    }`}
+                            />
+                        ))}
+                    </div>
+                </div>
+
+                {/* ── BOTTOM ACTION BUTTON ── */}
+                <div className="fixed bottom-0 left-0 right-0 p-4 bg-background/80 backdrop-blur-lg border-t border-border/50 z-50">
+                    <Button
+                        variant="gradient"
+                        size="xl"
+                        className="w-full rounded-2xl text-base font-bold h-14 shadow-lg"
+                        onClick={handleMobilityNext}
+                    >
+                        {isLastExercise ? (
+                            <><Check className="w-5 h-5 mr-2" /> Finalizar movilidad 🎉</>
+                        ) : (
+                            <><ArrowRight className="w-5 h-5 mr-2" /> Siguiente ejercicio</>
+                        )}
+                    </Button>
+                </div>
+            </div>
+        );
+    }
+
+    // ─── RENDERIZADO: INTERFAZ DE ENTRENAMIENTO EN CURSO (NORMAL) ──────────────
     if (isWorkoutActive && activeExercises.length > 0 && currentEx) {
         const setsStatus = completedSets[currentEx.id] || [];
         const currentTotalSets = setsStatus.length || currentEx.sets;
